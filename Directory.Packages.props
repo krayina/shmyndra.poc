@@ -1,0 +1,42 @@
+<Project ToolsVersion="15.0">
+  <!-- Properties -->
+  <PropertyGroup>
+    <MicrosoftBuildVersion>17.13.9</MicrosoftBuildVersion>
+    <xunitVersion>2.8.0</xunitVersion>
+  </PropertyGroup>
+
+  <!-- Generator packages -->
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Build.Framework" Version="$(MicrosoftBuildVersion)" />
+    <PackageVersion Include="Microsoft.Build.Utilities.Core" Version="$(MicrosoftBuildVersion)" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
+    <PackageVersion Include="Scriban.Signed" Version="6.2.1" />
+  </ItemGroup>
+
+  <!-- Test packages -->
+  <ItemGroup>
+    <PackageVersion Include="FluentAssertions" Version="8.6.0" />
+    <PackageVersion Include="coverlet.collector" Version="6.0.2" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.10.0" />
+    <PackageVersion Include="Moq" Version="4.20.70" />
+    <PackageVersion Include="Verify.SourceGenerators" Version="2.2.0" />
+    <PackageVersion Include="Verify.Xunit" Version="24.2.0" />
+    <PackageVersion Include="xunit" Version="$(xunitVersion)" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="$(xunitVersion)" />
+  </ItemGroup>
+
+  <!-- Shared packages -->
+  <ItemGroup>
+    <PackageVersion Include="PolySharp" Version="1.14.1" />
+    <PackageVersion Include="System.Collections.Immutable" Version="8.0.0" />
+    <PackageVersion Include="System.ComponentModel.Annotations" Version="5.0.0" />
+    <PackageVersion Include="System.Memory" Version="4.6.0" />
+    <PackageVersion Include="System.Threading.Tasks.Extensions" Version="4.6.3" />
+  </ItemGroup>
+
+  <!-- Mavlink packages -->
+  <ItemGroup>
+    <PackageVersion Include="SerialPortStream" Version="2.4.2" />
+  </ItemGroup>
+</Project>
