@@ -1,0 +1,26 @@
+﻿namespace Mavlink.Common;
+
+public enum MavAutopilot : byte
+{
+	Generic = 0,
+	Reserved = 1,
+	Slugs = 2,
+	Ardupilotmega = 3,
+	Openpilot = 4,
+	GenericWaypointsOnly = 5,
+	GenericWaypointsAndSimpleNavigationOnly = 6,
+	GenericMissionFull = 7,
+	Invalid = 8,
+	Ppz = 9,
+	Udb = 10,
+	Fp = 11,
+	Px4 = 12,
+	Smaccmpilot = 13,
+	Autoquad = 14,
+	Armazila = 15,
+	Aerob = 16,
+	Asluav = 17,
+	Smartap = 18,
+	Airrails = 19,
+	Reflex = 20,
+}
