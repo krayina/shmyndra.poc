@@ -1,5 +1,4 @@
-﻿using PoC.Mavlink;
-using System.Buffers;
+﻿using System.Buffers;
 
 namespace Mavlink;
 
