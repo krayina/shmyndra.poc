@@ -3,20 +3,42 @@ using Mavlink.Common.Codecs.Metadata;
 
 namespace Mavlink.Dialects;
 
-internal static class CommonDialect
+internal sealed class CommonDialect : IMavlinkDialect
 {
-    private static int _initialized = 0;
-    public static void EnsureInitialized()
+#if NET5_0_OR_GREATER
+        [System.Runtime.CompilerServices.ModuleInitializer]
+        internal static void Initialize() => MavlinkDialectRegistry.Register(Instance);
+#endif
+
+    public static readonly CommonDialect Instance = new CommonDialect();
+
+    private CommonDialect() { }
+
+    public string Name => "common";
+
+    // For AOT compilation. Also could works with dictionary cache.
+    public IMavlinkMessageInfo? GetInfo(uint msgId) => msgId switch
     {
-        if (Interlocked.CompareExchange(ref _initialized, 1, 0) == 0)
-        {
-            MavlinkDialectRegistry.RegisterMessage(HeartbeatMessageInfo.Instance);
-            MavlinkDialectRegistry.RegisterRouter(new CommonDialectRouter());
-        }
+        0 => HeartbeatMessageInfo.Instance,
+        _ => null
+    };
+
+    // For AOT compilation. Also could works with dictionary cache.
+    public IMavlinkMessageInfo? GetInfo(Type type)
+    {
+        if (type == typeof(HeartbeatMavlinkMessage)) return HeartbeatMessageInfo.Instance;
+        return null;
+        // return _typeMap.TryGetValue(type, out var info) ? info : null;
     }
 
-#if NET5_0_OR_GREATER
-    [System.Runtime.CompilerServices.ModuleInitializer]
-    internal static void Initialize() => EnsureInitialized();
-#endif
+    public bool TryRoute(MavlinkClient client, IMavlinkMessage msg, CancellationToken ct, out ValueTask task)
+    {
+        if (msg is HeartbeatMavlinkMessage hb)
+        {
+            task = client.SendAsync(hb, ct);
+            return true;
+        }
+        task = default;
+        return false;
+    }
 }

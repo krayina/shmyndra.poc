@@ -24,11 +24,4 @@ public sealed class HeartbeatPayloadSerializer : IMavlinkPayloadSerializer<Heart
         // deserialization...
         return new HeartbeatMavlinkMessage();
     }
-
-    // Optimization for JIT ?? -- I don't know if it's needed
-    //   [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    //   private void BaseSerialization(HeartbeatMavlinkMessage message, Span<byte> destination)
-    //{
-
-    //}
 }
