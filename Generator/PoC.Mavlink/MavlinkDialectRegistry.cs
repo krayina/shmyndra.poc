@@ -1,4 +1,6 @@
-﻿#if NETSTANDARD1_5_OR_GREATER
+﻿#if NET5_0_OR_GREATER
+using System.ComponentModel;
+
 namespace Mavlink.Dialects;
 
 public static class MavlinkDialectRegistry
@@ -7,6 +9,9 @@ public static class MavlinkDialectRegistry
     private static IMavlinkDialect[] _cachedArray = Array.Empty<IMavlinkDialect>();
     private static readonly object _lock = new object();
 
+#if NETSTANDARD2_1_OR_GREATER
+    [EditorBrowsable(EditorBrowsableState.Never)]
+#endif
     public static void Register(IMavlinkDialect dialect)
     {
         if (dialect == null)
