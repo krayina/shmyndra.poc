@@ -44,4 +44,6 @@ public static class MavlinkConstants
 
 	public const int MAX_PAYLOAD_V1 = 255;
 	public const int MAX_PAYLOAD_V2 = 255;
+
+	public const int MAX_PAYLOAD_ARRAY_POOL_SIZE = 512;
 }

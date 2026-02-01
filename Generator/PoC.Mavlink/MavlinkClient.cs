@@ -12,6 +12,7 @@ public sealed class MavlinkClient
     private byte _sequence;
     private readonly byte _systemId;
     private readonly byte _componentId;
+    private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
 
     private MavlinkClient() { }
 
@@ -42,7 +43,7 @@ public sealed class MavlinkClient
         }
 
         var typedInfo = (IMavlinkMessageInfo<T>)info;
-        return SerializeAndSendTyped(message, typedInfo, ct);
+        return SendGuardedAsync(message, info, ct);
     }
 
     public ValueTask SendAsync(IMavlinkMessage message, CancellationToken ct = default)
@@ -58,64 +59,37 @@ public sealed class MavlinkClient
             throw new ArgumentException($"Message type {message.GetType().Name} is not supported by the linked dialects.");
         }
 
-        return SerializeAndSendUntyped(message, info, ct);
+        return SendGuardedAsync(message, info, ct);
     }
 
-#if NETSTANDARD2_1_OR_GREATER
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#if NET6_0_OR_GREATER
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
 #endif
-    private ValueTask SerializeAndSendTyped<T>(T message, IMavlinkMessageInfo<T> info, CancellationToken ct) where T : IMavlinkMessage
+    private async ValueTask SendGuardedAsync<T>(T message, IMavlinkMessageInfo info, CancellationToken ct)
+        where T : IMavlinkMessage
     {
-        var buffer = ArrayPool<byte>.Shared.Rent(MavlinkConstants.MAX_PAYLOAD_V2 + 20 + 13);
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+
+        byte[]? buffer = null;
 
         try
         {
-            int length = MavlinkPacketSerializer.SerializeV2(
-                message,
-                info,
-                _sequence++,
-                _systemId,
-                _componentId,
-                buffer,
-                _signer);
-            return SendBufferAsync(buffer, length, ct);
-        }
-        catch
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-            throw;
-        }
-    }
+            buffer = ArrayPool<byte>.Shared.Rent(MavlinkConstants.MAX_PAYLOAD_ARRAY_POOL_SIZE);
+            int length;
 
-#if NETSTANDARD2_1_OR_GREATER
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-#endif
-    private ValueTask SerializeAndSendUntyped(IMavlinkMessage message, IMavlinkMessageInfo info, CancellationToken ct)
-    {
-        var buffer = ArrayPool<byte>.Shared.Rent(MavlinkConstants.MAX_PAYLOAD_V2 + 20);
-        try
-        {
-            int length = MavlinkPacketSerializer.SerializeV2(
-                message,
-                info,
-                _sequence++,
-                _systemId,
-                _componentId,
-                buffer,
-                _signer);
-            return SendBufferAsync(buffer, length, ct);
-        }
-        catch
-        {
-            ArrayPool<byte>.Shared.Return(buffer);
-            throw;
-        }
-    }
+            if (info is IMavlinkMessageInfo<T> typedInfo)
+            {
+                length = MavlinkPacketSerializer.SerializeV2(
+                    message, typedInfo, _sequence++, _systemId,
+                    _componentId, buffer, _signer);
+            }
+            else
+            {
+                length = MavlinkPacketSerializer.SerializeV2(
+                    message, info, _sequence++, _systemId,
+                    _componentId, buffer,_signer);
+            }
 
-    private async ValueTask SendBufferAsync(byte[] buffer, int length, CancellationToken ct)
-    {
-        try
-        {
 #if NETSTANDARD2_1_OR_GREATER
             await _stream.WriteAsync(buffer.AsMemory(0, length), ct).ConfigureAwait(false);
 #else
@@ -124,7 +98,11 @@ public sealed class MavlinkClient
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(buffer);
+            if (buffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+            _sendLock.Release();
         }
     }
 
