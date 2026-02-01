@@ -1,4 +1,5 @@
-﻿using System.Security.Cryptography;
+﻿using System.Buffers;
+using System.Security.Cryptography;
 
 namespace Mavlink;
 
@@ -10,10 +11,15 @@ namespace Mavlink;
 /// to maintain the correct timestamp sequence.
 /// </para>
 /// </summary>
-public sealed class MavlinkSigner
+public sealed class MavlinkSigner : IDisposable
 {
     private readonly byte[] _secretKey;
+    private readonly object _syncLock = new object();
     private ulong _lastTimestamp;
+
+#if !NET6_0_OR_GREATER
+    private readonly SHA256 _hasher;
+#endif
 
     /// <summary>
     /// Gets the Link ID used for this signing session.
@@ -23,7 +29,16 @@ public sealed class MavlinkSigner
     /// <summary>
     /// Gets the last timestamp (in 10us units since 2015) used for signing a packet.
     /// </summary>
-    public ulong LastTimestamp => _lastTimestamp;
+    public ulong LastTimestamp
+    {
+        get
+        {
+            lock (_syncLock)
+            {
+                return _lastTimestamp;
+            }
+        }
+    }
 
     /// <summary>
     /// Initializes a new signing session.
@@ -39,19 +54,28 @@ public sealed class MavlinkSigner
         _secretKey = secretKey;
         LinkId = linkId;
         _lastTimestamp = 0;
+
+#if !NET6_0_OR_GREATER
+        _hasher = SHA256.Create();
+#endif
     }
 
     internal ulong GetNextTimestamp()
     {
-        ulong now = (ulong)(DateTime.UtcNow - new DateTime(2015, 1, 1)).TotalMilliseconds * 100;
+        const long ticks2015 = 635556672000000000;
 
-        if (now <= _lastTimestamp)
+        lock (_syncLock)
         {
-            now = _lastTimestamp + 1;
-        }
+            ulong now = (ulong)((DateTime.UtcNow.Ticks - ticks2015) / 100);
 
-        _lastTimestamp = now;
-        return now;
+            if (now <= _lastTimestamp)
+            {
+                now = _lastTimestamp + 1;
+            }
+
+            _lastTimestamp = now;
+            return now;
+        }
     }
 
     internal void ComputeSignature(ReadOnlySpan<byte> packetWithoutSignature, ulong timestamp, Span<byte> output48bit)
@@ -67,40 +91,44 @@ public sealed class MavlinkSigner
         buffer[32 + packetWithoutSignature.Length] = LinkId;
         MavlinkSigner.Store48BitTimestamp(timestamp, buffer.Slice(32 + packetWithoutSignature.Length + 1));
 
-#if NET5_0_OR_GREATER
+#if NET6_0_OR_GREATER
         Span<byte> sha256Output = stackalloc byte[32];
         SHA256.HashData(buffer, sha256Output);
         sha256Output.Slice(0, 6).CopyTo(output48bit);
-
-#elif NETSTANDARD2_1_OR_GREATER
-        using (var sha = SHA256.Create())
+#else
+        lock (_syncLock)
         {
+#if NETSTANDARD2_1_OR_GREATER || NETCOREAPP2_1_OR_GREATER
             Span<byte> sha256Output = stackalloc byte[32];
-            if (sha.TryComputeHash(buffer, sha256Output, out _))
+            if (_hasher.TryComputeHash(buffer, sha256Output, out _))
             {
                 sha256Output.Slice(0, 6).CopyTo(output48bit);
             }
-        }
-
 #else
-        byte[] rentBuffer = System.Buffers.ArrayPool<byte>.Shared.Rent(totalLen);
-        try
-        {
-            buffer.CopyTo(rentBuffer);
-            using (var sha = SHA256.Create())
+            byte[] rentBuffer = ArrayPool<byte>.Shared.Rent(totalLen);
+            try
             {
-                byte[] hashResult = sha.ComputeHash(rentBuffer, 0, totalLen);
+                buffer.CopyTo(rentBuffer);
+                byte[] hashResult = _hasher.ComputeHash(rentBuffer, 0, totalLen);
                 new ReadOnlySpan<byte>(hashResult, 0, 6).CopyTo(output48bit);
             }
-        }
-        finally
-        {
-            System.Buffers.ArrayPool<byte>.Shared.Return(rentBuffer);
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(rentBuffer);
+            }
+#endif
         }
 #endif
     }
 
-    public static void Store48BitTimestamp(ulong time, Span<byte> destination)
+    public void Dispose()
+    {
+#if !NET6_0_OR_GREATER
+        _hasher?.Dispose();
+#endif
+    }
+
+    private static void Store48BitTimestamp(ulong time, Span<byte> destination)
     {
         destination[0] = (byte)time;
         destination[1] = (byte)(time >> 8);

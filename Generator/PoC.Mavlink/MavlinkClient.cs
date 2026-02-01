@@ -4,15 +4,21 @@ using System.Runtime.CompilerServices;
 
 namespace Mavlink;
 
-public sealed class MavlinkClient
+#if NETSTANDARD2_1_OR_GREATER
+public sealed class MavlinkClient : IDisposable, IAsyncDisposable
+#else
+public sealed class MavlinkClient : IDisposable
+#endif
 {
     private readonly Stream _stream;
     private readonly IMavlinkDialect _dialect;
     private readonly MavlinkSigner? _signer;
+    private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
+
     private byte _sequence;
     private readonly byte _systemId;
     private readonly byte _componentId;
-    private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
+    private volatile bool _disposed;
 
     private MavlinkClient() { }
 
@@ -42,7 +48,6 @@ public sealed class MavlinkClient
             throw new ArgumentException($"Type {typeof(T).Name} not registered");
         }
 
-        var typedInfo = (IMavlinkMessageInfo<T>)info;
         return SendGuardedAsync(message, info, ct);
     }
 
@@ -68,15 +73,24 @@ public sealed class MavlinkClient
     private async ValueTask SendGuardedAsync<T>(T message, IMavlinkMessageInfo info, CancellationToken ct)
         where T : IMavlinkMessage
     {
+        if (_disposed)
+        {
+            throw new ObjectDisposedException(nameof(MavlinkClient));
+        }
+
         await _sendLock.WaitAsync(ct).ConfigureAwait(false);
 
         byte[]? buffer = null;
 
         try
         {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(MavlinkClient));
+            }
+
             buffer = ArrayPool<byte>.Shared.Rent(MavlinkConstants.MAX_PAYLOAD_ARRAY_POOL_SIZE);
             int length;
-
             if (info is IMavlinkMessageInfo<T> typedInfo)
             {
                 length = MavlinkPacketSerializer.SerializeV2(
@@ -87,7 +101,7 @@ public sealed class MavlinkClient
             {
                 length = MavlinkPacketSerializer.SerializeV2(
                     message, info, _sequence++, _systemId,
-                    _componentId, buffer,_signer);
+                    _componentId, buffer, _signer);
             }
 
 #if NETSTANDARD2_1_OR_GREATER
@@ -102,7 +116,15 @@ public sealed class MavlinkClient
             {
                 ArrayPool<byte>.Shared.Return(buffer);
             }
-            _sendLock.Release();
+
+            try
+            {
+                _sendLock.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Ignore
+            }
         }
     }
 
@@ -120,4 +142,48 @@ public sealed class MavlinkClient
 
         return new MavlinkDialectCompositor(dialects);
     }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }    
+        _disposed = true;
+        _sendLock.Dispose();
+        _stream.Dispose();
+    }
+
+#if NETSTANDARD2_1_OR_GREATER
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+
+        try
+        {
+            await _sendLock.WaitAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Ignore
+        }
+        finally
+        {
+            _sendLock.Dispose();
+        }
+
+        if (_stream is IAsyncDisposable asyncStream)
+        {
+            await asyncStream.DisposeAsync().ConfigureAwait(false);
+        }
+        else
+        {
+            _stream.Dispose();
+        }
+    }
+#endif
 }
