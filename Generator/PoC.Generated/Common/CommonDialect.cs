@@ -30,15 +30,4 @@ public sealed class CommonDialect : IMavlinkDialect
         return null;
         // return _typeMap.TryGetValue(type, out var info) ? info : null;
     }
-
-    public bool TryRoute(MavlinkClient client, IMavlinkMessage msg, CancellationToken ct, out ValueTask task)
-    {
-        if (msg is HeartbeatMavlinkMessage hb)
-        {
-            task = client.SendAsync(hb, ct);
-            return true;
-        }
-        task = default;
-        return false;
-    }
 }
