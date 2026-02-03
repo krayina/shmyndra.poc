@@ -60,7 +60,24 @@ public sealed class MavlinkSigner : IDisposable
 #endif
     }
 
-    internal ulong GetNextTimestamp()
+    /// <summary>
+    /// Signs a MAVLink packet.
+    /// This method generates a new timestamp, writes the LinkID, Timestamp, and the 48-bit signature 
+    /// into the provided destination span.
+    /// </summary>
+    /// <param name="packetWithCrc">The packet data including CRC (header + payload + crc).</param>
+    /// <param name="signatureBlock">The destination span for the 13-byte signature block.</param>
+    internal void SignPacket(ReadOnlySpan<byte> packetWithCrc, Span<byte> signatureBlock)
+    {
+        ulong timestamp = GetNextTimestamp();
+
+        signatureBlock[0] = LinkId;
+        Store48BitTimestamp(timestamp, signatureBlock.Slice(1));
+
+        ComputeSignature(packetWithCrc, timestamp, signatureBlock.Slice(7));
+    }
+
+    private ulong GetNextTimestamp()
     {
         const long ticks2015 = 635556672000000000;
 
@@ -78,7 +95,7 @@ public sealed class MavlinkSigner : IDisposable
         }
     }
 
-    internal void ComputeSignature(ReadOnlySpan<byte> packetWithoutSignature, ulong timestamp, Span<byte> output48bit)
+    private void ComputeSignature(ReadOnlySpan<byte> packetWithoutSignature, ulong timestamp, Span<byte> output48bit)
     {
         int totalLen = 32 + packetWithoutSignature.Length + 1 + 6;
 
@@ -89,7 +106,7 @@ public sealed class MavlinkSigner : IDisposable
         _secretKey.CopyTo(buffer);
         packetWithoutSignature.CopyTo(buffer.Slice(32));
         buffer[32 + packetWithoutSignature.Length] = LinkId;
-        MavlinkSigner.Store48BitTimestamp(timestamp, buffer.Slice(32 + packetWithoutSignature.Length + 1));
+        Store48BitTimestamp(timestamp, buffer.Slice(32 + packetWithoutSignature.Length + 1));
 
 #if NET6_0_OR_GREATER
         Span<byte> sha256Output = stackalloc byte[32];
@@ -121,13 +138,6 @@ public sealed class MavlinkSigner : IDisposable
 #endif
     }
 
-    public void Dispose()
-    {
-#if !NET6_0_OR_GREATER
-        _hasher?.Dispose();
-#endif
-    }
-
     private static void Store48BitTimestamp(ulong time, Span<byte> destination)
     {
         destination[0] = (byte)time;
@@ -136,5 +146,12 @@ public sealed class MavlinkSigner : IDisposable
         destination[3] = (byte)(time >> 24);
         destination[4] = (byte)(time >> 32);
         destination[5] = (byte)(time >> 40);
+    }
+
+    public void Dispose()
+    {
+#if !NET6_0_OR_GREATER
+        _hasher?.Dispose();
+#endif
     }
 }

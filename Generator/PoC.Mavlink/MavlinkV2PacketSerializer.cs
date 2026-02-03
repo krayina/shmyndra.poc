@@ -120,10 +120,7 @@ public static class MavlinkV2PacketSerializer
         {
             var packetWithCrc = buffer.Slice(0, totalLength);
             var signatureBlock = buffer.Slice(totalLength, 13);
-            ulong timestamp = signer!.GetNextTimestamp();
-            signatureBlock[0] = signer.LinkId;
-            MavlinkSigner.Store48BitTimestamp(timestamp, signatureBlock.Slice(1));
-            signer.ComputeSignature(packetWithCrc, timestamp, signatureBlock.Slice(7));
+            signer!.SignPacket(packetWithCrc, signatureBlock);
             totalLength += 13;
         }
         return totalLength;
