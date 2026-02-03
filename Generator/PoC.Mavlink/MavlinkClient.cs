@@ -93,13 +93,13 @@ public sealed class MavlinkClient : IDisposable
             int length;
             if (info is IMavlinkMessageInfo<T> typedInfo)
             {
-                length = MavlinkPacketSerializer.SerializeV2(
+                length = MavlinkV2PacketSerializer.Serialize(
                     message, typedInfo, _sequence++, _systemId,
                     _componentId, buffer, _signer);
             }
             else
             {
-                length = MavlinkPacketSerializer.SerializeV2(
+                length = MavlinkV2PacketSerializer.Serialize(
                     message, info, _sequence++, _systemId,
                     _componentId, buffer, _signer);
             }

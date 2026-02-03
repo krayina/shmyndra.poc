@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 
 namespace Mavlink;
 
-public static partial class MavlinkPacketSerializer
+public static class MavlinkV2PacketSerializer
 {
     // ----------------------------------------------------------------------------------------------
     // V2 Header: STX(1) + LEN(1) + INC(1) + CMP(1) + SEQ(1) + SYS(1) + COMP(1) + MSGID(3) = 10 bytes
@@ -15,7 +15,7 @@ public static partial class MavlinkPacketSerializer
 #if NETSTANDARD2_1_OR_GREATER
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
 #endif
-    public static int SerializeV2<T>(
+    public static int Serialize<T>(
         T message,
         IMavlinkMessageInfo<T> info,
         byte sequence,
@@ -29,7 +29,7 @@ public static partial class MavlinkPacketSerializer
         info.PayloadSerializer.SerializeV2(message, payloadSpan);
 
         // 2. Assemble Packet (Header + CRC)
-        return AssemblePacketV2(
+        return AssemblePacket(
             info.PayloadLength,
             info.MessageId,
             info.CrcExtra,
@@ -46,7 +46,7 @@ public static partial class MavlinkPacketSerializer
 #if NETSTANDARD2_1_OR_GREATER
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
 #endif
-    public static int SerializeV2(
+    public static int Serialize(
         IMavlinkMessage message,
         IMavlinkMessageInfo info,
         byte sequence,
@@ -58,7 +58,7 @@ public static partial class MavlinkPacketSerializer
         var payloadSpan = buffer.Slice(MavlinkConstants.HEADER_V2_LENGTH);
         info.SerializePayloadV2(message, payloadSpan);
 
-        return AssemblePacketV2(
+        return AssemblePacket(
             info.PayloadLength,
             info.MessageId,
             info.CrcExtra,
@@ -69,7 +69,7 @@ public static partial class MavlinkPacketSerializer
             signer);
     }
 
-    private static int AssemblePacketV2(
+    private static int AssemblePacket(
         int maxPayloadLen,
         uint msgId,
         byte crcExtra,

@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 
 namespace Mavlink;
 
-public static partial class MavlinkPacketSerializer
+public static class MavlinkV1PacketSerializer
 {
     // ---------------------------------------------------------------------------
     // V1 Header: STX(1) + LEN(1) + SEQ(1) + SYS(1) + COMP(1) + MSGID(1) = 6 bytes
@@ -26,7 +26,7 @@ public static partial class MavlinkPacketSerializer
         var payloadSpan = buffer.Slice(MavlinkConstants.HEADER_V1_LENGTH);
         info.PayloadSerializer.SerializeV1(message, payloadSpan);
 
-        return AssemblePacketV1(
+        return AssemblePacket(
             info.PayloadLength,
             info.MessageId,
             info.CrcExtra,
@@ -42,7 +42,7 @@ public static partial class MavlinkPacketSerializer
 #if NETSTANDARD2_1_OR_GREATER
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
 #endif
-    public static int SerializeV1(
+    public static int Serialize(
         IMavlinkMessage message,
         IMavlinkMessageInfo info,
         byte sequence,
@@ -53,7 +53,7 @@ public static partial class MavlinkPacketSerializer
         var payloadSpan = buffer.Slice(MavlinkConstants.HEADER_V1_LENGTH);
         info.SerializePayloadV1(message, payloadSpan);
 
-        return AssemblePacketV1(
+        return AssemblePacket(
             info.PayloadLength,
             info.MessageId,
             info.CrcExtra,
@@ -63,7 +63,7 @@ public static partial class MavlinkPacketSerializer
             buffer);
     }
 
-    private static int AssemblePacketV1(
+    private static int AssemblePacket(
         int payloadLen,
         uint msgId,
         byte crcExtra,
