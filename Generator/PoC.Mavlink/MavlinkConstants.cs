@@ -13,7 +13,7 @@ public enum MavlinkCompatFlags : byte
 	None = 0
 }
 
-public static class MavlinkConstants
+internal static class MavlinkConstants
 {
 	// Magic bytes
 	public const byte MAGIC_V1 = 0xFE;
