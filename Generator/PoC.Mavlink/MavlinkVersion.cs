@@ -1,7 +1,15 @@
 ﻿namespace Mavlink;
 
-public enum MavlinkVersion : byte
+public enum MavlinkSessionVersion : byte
 {
-	V1 = 1,
-	V2 = 2
+    Unknown = 0,
+    V1 = 1,
+    V2 = 2,
+    Hybrid = 3
+}
+
+public enum MavlinkPacketVersion : byte
+{
+    V1 = 1,
+    V2 = 2,
 }
