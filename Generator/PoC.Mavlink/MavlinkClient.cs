@@ -15,29 +15,50 @@ public sealed class MavlinkClient : IDisposable
     private readonly MavlinkSigner? _signer;
     private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
 
-    private byte _sequence;
+    private readonly MavlinkDispatcher _dispatcher = new MavlinkDispatcher();
+    private readonly MavlinkSessionState _sessionState = new MavlinkSessionState();
+    private readonly MavlinkPacketProcessor _processor;
+    private readonly MavlinkFrameReader _framer = new MavlinkFrameReader();
+    private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+
     private readonly byte _systemId;
     private readonly byte _componentId;
+
+    private Task? _readTask;
     private volatile bool _disposed;
+
+    public MavlinkSessionState Session => _sessionState;
 
     private MavlinkClient() { }
 
-    public MavlinkClient(Stream stream, byte systemId, byte componentId, params IMavlinkDialect[] dialect)
+    public MavlinkClient(Stream stream, byte systemId, byte componentId, params IMavlinkDialect[] dialects)
     {
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
         _systemId = systemId;
         _componentId = componentId;
-        _dialect = PrepareDialectOrThrow(dialect);
+        _dialect = PrepareDialectOrThrow(dialects);
+        _processor = new MavlinkPacketProcessor(_dialect, _sessionState, _dispatcher);
     }
 
-    public MavlinkClient(Stream stream, byte systemId, byte componentId, MavlinkSigner signer, params IMavlinkDialect[] dialect)
+    public MavlinkClient(Stream stream, byte systemId, byte componentId, MavlinkSigner signer, params IMavlinkDialect[] dialects)
     {
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
         _systemId = systemId;
         _componentId = componentId;
-        _dialect = PrepareDialectOrThrow(dialect);
+        _signer = signer;
+        _dialect = PrepareDialectOrThrow(dialects);
+        _processor = new MavlinkPacketProcessor(_dialect, _sessionState, _dispatcher);
+    }
 
-        _signer = signer ?? throw new ArgumentNullException(nameof(stream));
+    public void StartReading()
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(MavlinkClient));
+
+        if (_readTask != null)
+            throw new InvalidOperationException("Reading already started.");
+
+        _readTask = Task.Run(() => ReadLoopAsync(_cts.Token));
     }
 
     public ValueTask SendAsync<T>(T message, CancellationToken ct = default) where T : IMavlinkMessage
@@ -67,6 +88,28 @@ public sealed class MavlinkClient : IDisposable
         return SendGuardedAsync(message, info, ct);
     }
 
+    public IDisposable Subscribe<T>(
+        Action<T, MavlinkContext> callback,
+        Func<MavlinkContext, bool>? filter = null)
+        where T : IMavlinkMessage
+    {
+        return _dispatcher.Subscribe(callback, filter);
+    }
+
+    public IDisposable Subscribe<T>(Action<T> callback)
+        where T : IMavlinkMessage
+    {
+        return _dispatcher.Subscribe<T>((msg, _) => callback(msg));
+    }
+
+    public IDisposable SubscribeAll(
+        Action<IMavlinkMessage,
+        MavlinkContext> callback,
+        Func<MavlinkContext, bool>? filter = null)
+    {
+        return _dispatcher.SubscribeAll(callback, filter);
+    }
+
 #if NET6_0_OR_GREATER
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
 #endif
@@ -90,18 +133,19 @@ public sealed class MavlinkClient : IDisposable
             }
 
             buffer = ArrayPool<byte>.Shared.Rent(MavlinkConstants.MAX_PAYLOAD_ARRAY_POOL_SIZE);
+
             int length;
+            byte seq = _sessionState.NextSequence();
+
             if (info is IMavlinkMessageInfo<T> typedInfo)
             {
                 length = MavlinkV2PacketSerializer.Serialize(
-                    message, typedInfo, _sequence++, _systemId,
-                    _componentId, buffer, _signer);
+                    message, typedInfo, seq, _systemId, _componentId, buffer, _signer);
             }
             else
             {
                 length = MavlinkV2PacketSerializer.Serialize(
-                    message, info, _sequence++, _systemId,
-                    _componentId, buffer, _signer);
+                    message, info, seq, _systemId, _componentId, buffer, _signer);
             }
 
 #if NETSTANDARD2_1_OR_GREATER
@@ -128,6 +172,45 @@ public sealed class MavlinkClient : IDisposable
         }
     }
 
+    private async Task ReadLoopAsync(CancellationToken ct)
+    {
+        var readBuffer = new byte[4096];
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+#if NETSTANDARD2_1_OR_GREATER
+                int read = await _stream.ReadAsync(readBuffer.AsMemory(), ct).ConfigureAwait(false);
+#else
+                int read = await _stream.ReadAsync(readBuffer, 0, readBuffer.Length, ct).ConfigureAwait(false);
+#endif
+                if (read == 0)
+                {
+                    break;
+                }
+
+                ProcessReceivedBytes(readBuffer, read);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (IOException)
+        {
+        }
+    }
+
+    private void ProcessReceivedBytes(byte[] data, int count)
+    {
+        _framer.Append(data, 0, count);
+
+        while (_framer.TryReadFrame(out int offset, out int length, out var version))
+        {
+            _processor.ProcessFrame(_framer.RawBuffer, offset, length, version);
+        }
+    }
+
     private static IMavlinkDialect PrepareDialectOrThrow(IMavlinkDialect[] dialects)
     {
         if (dialects == null || dialects.Length == 0)
@@ -140,6 +223,13 @@ public sealed class MavlinkClient : IDisposable
             return dialects[0] ?? throw new ArgumentException("Dialect cannot be null");
         }
 
+        for (int i = 0; i < dialects.Length; i++)
+        {
+            if (dialects[i] == null)
+            {
+                throw new ArgumentException($"Dialect at index {i} is null.");
+            }
+        }
         return new MavlinkDialectCompositor(dialects);
     }
 
@@ -148,8 +238,11 @@ public sealed class MavlinkClient : IDisposable
         if (_disposed)
         {
             return;
-        }    
+        }
         _disposed = true;
+
+        _cts.Cancel();
+        _cts.Dispose();
         _sendLock.Dispose();
         _stream.Dispose();
     }
@@ -161,20 +254,24 @@ public sealed class MavlinkClient : IDisposable
         {
             return;
         }
+
         _disposed = true;
 
-        try
+        _cts.Cancel();
+
+        if (_readTask != null)
         {
-            await _sendLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await _readTask.ConfigureAwait(false);
+            }
+            catch
+            {
+            }
         }
-        catch (ObjectDisposedException)
-        {
-            // Ignore
-        }
-        finally
-        {
-            _sendLock.Dispose();
-        }
+
+        _cts.Dispose();
+        _sendLock.Dispose();
 
         if (_stream is IAsyncDisposable asyncStream)
         {
