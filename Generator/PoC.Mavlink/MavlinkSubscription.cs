@@ -1,10 +1,10 @@
 ﻿namespace Mavlink;
 
-internal sealed class MavlinkSubscriptionToken : IDisposable
+internal sealed class MavlinkSubscription : IDisposable
 {
     private Action? _onDispose;
 
-    public MavlinkSubscriptionToken(Action onDispose)
+    public MavlinkSubscription(Action onDispose)
     {
         _onDispose = onDispose;
     }

@@ -19,25 +19,34 @@ public sealed class MavlinkSessionState
 
     internal void UpdateFromPacket(MavlinkPacketVersion packetVersion, bool signed)
     {
-        var current = (MavlinkSessionVersion)Volatile.Read(ref _version);
-        var next = current;
+        while (true)
+        {
+            int current = Volatile.Read(ref _version);
+            var currentVersion = (MavlinkSessionVersion)current;
 
-        if (current == MavlinkSessionVersion.Unknown)
-        {
-            next = packetVersion == MavlinkPacketVersion.V2
-                ? MavlinkSessionVersion.V2
-                : MavlinkSessionVersion.V1;
-        }
-        else if ((current == MavlinkSessionVersion.V1 && packetVersion == MavlinkPacketVersion.V2) ||
-                 (current == MavlinkSessionVersion.V2 && packetVersion == MavlinkPacketVersion.V1))
-        {
-            next = MavlinkSessionVersion.Hybrid;
-        }
+            MavlinkSessionVersion next;
 
-        if (next != current)
-        {
-            Interlocked.Exchange(ref _version, (int)next);
-            VersionChanged?.Invoke(next);
+            if (currentVersion == MavlinkSessionVersion.Unknown)
+            {
+                next = packetVersion == MavlinkPacketVersion.V2
+                    ? MavlinkSessionVersion.V2
+                    : MavlinkSessionVersion.V1;
+            }
+            else if ((currentVersion == MavlinkSessionVersion.V1 && packetVersion == MavlinkPacketVersion.V2) ||
+                     (currentVersion == MavlinkSessionVersion.V2 && packetVersion == MavlinkPacketVersion.V1))
+            {
+                next = MavlinkSessionVersion.Hybrid;
+            }
+            else
+            {
+                break;
+            }
+
+            if (Interlocked.CompareExchange(ref _version, (int)next, current) == current)
+            {
+                VersionChanged?.Invoke(next);
+                break;
+            }
         }
 
         if (signed)

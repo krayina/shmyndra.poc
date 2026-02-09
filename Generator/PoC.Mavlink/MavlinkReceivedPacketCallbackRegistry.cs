@@ -1,25 +1,25 @@
 ﻿namespace Mavlink;
 
-internal sealed class MavlinkSubscriptionList
+internal sealed class MavlinkReceivedPacketCallbackRegistry
 {
-    private volatile IMavlinkSubscriptionHandler[] _handlers = Array.Empty<IMavlinkSubscriptionHandler>();
+    private volatile IMavlinkReceivedPacketCallback[] _handlers = Array.Empty<IMavlinkReceivedPacketCallback>();
     private readonly object _lock = new object();
 
-    public IMavlinkSubscriptionHandler[] Snapshot => _handlers;
+    public IMavlinkReceivedPacketCallback[] Snapshot => _handlers;
 
-    public void Add(IMavlinkSubscriptionHandler handler)
+    public void Add(IMavlinkReceivedPacketCallback handler)
     {
         lock (_lock)
         {
             var old = _handlers;
-            var next = new IMavlinkSubscriptionHandler[old.Length + 1];
+            var next = new IMavlinkReceivedPacketCallback[old.Length + 1];
             Array.Copy(old, next, old.Length);
             next[old.Length] = handler;
             _handlers = next;
         }
     }
 
-    public void Remove(IMavlinkSubscriptionHandler handler)
+    public void Remove(IMavlinkReceivedPacketCallback handler)
     {
         lock (_lock)
         {
@@ -32,11 +32,11 @@ internal sealed class MavlinkSubscriptionList
 
             if (old.Length == 1)
             {
-                _handlers = Array.Empty<IMavlinkSubscriptionHandler>();
+                _handlers = Array.Empty<IMavlinkReceivedPacketCallback>();
                 return;
             }
 
-            var next = new IMavlinkSubscriptionHandler[old.Length - 1];
+            var next = new IMavlinkReceivedPacketCallback[old.Length - 1];
             if (idx > 0)
             {
                 Array.Copy(old, 0, next, 0, idx);
