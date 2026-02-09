@@ -1,12 +1,10 @@
-﻿using Mavlink.Dialects;
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 
 namespace Mavlink;
 
 public static class MavlinkV2Serializer
 {
-    #region Serialization
     // ----------------------------------------------------------------------------------------------
     // V2 Header: STX(1) + LEN(1) + INC(1) + CMP(1) + SEQ(1) + SYS(1) + COMP(1) + MSGID(3) = 10 bytes
     // ----------------------------------------------------------------------------------------------
@@ -127,42 +125,4 @@ public static class MavlinkV2Serializer
         }
         return totalLength;
     }
-    #endregion
-
-    #region Deserialization
-    public static bool TryDeserialize(
-        ReadOnlySpan<byte> raw,
-        IMavlinkDialect dialect,
-        out MavlinkReceivedPacket context)
-    {
-        context = default;
-
-        var frame = new MavlinkV2Frame(raw);
-
-        var info = dialect.GetInfo(frame.MessageId);
-        if (info == null)
-        {
-            return false;
-        }
-
-        ushort computed = X25Crc.Calculate(frame.CrcRegion);
-        computed = X25Crc.Accumulate(computed, info.CrcExtra);
-        if (frame.ReceivedCrc != computed)
-        {
-            return false;
-        }
-
-        var message = info.DeserializePayloadV2(frame.Payload);
-
-        context = new MavlinkReceivedPacket(
-            message,
-            frame.SystemId,
-            frame.ComponentId,
-            frame.Sequence,
-            MavlinkPacketVersion.V2,
-            frame.IsSigned);
-
-        return true;
-    }
-    #endregion
 }

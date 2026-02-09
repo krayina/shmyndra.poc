@@ -13,9 +13,9 @@ internal static class MavlinkDeserializer
         switch (version)
         {
             case MavlinkPacketVersion.V2:
-                return MavlinkV2Serializer.TryDeserialize(frame, dialect, out packet);
+                return MavlinkV2Deserializer.TryDeserialize(frame, dialect, out packet);
             case MavlinkPacketVersion.V1:
-                return MavlinkV1Serializer.TryDeserialize(frame, dialect, out packet);
+                return MavlinkV1Deserializer.TryDeserialize(frame, dialect, out packet);
             default:
                 packet = default;
                 return false;

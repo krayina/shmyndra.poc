@@ -145,20 +145,9 @@ public sealed class MavlinkClient : IDisposable
             buffer = ArrayPool<byte>.Shared.Rent(MavlinkConstants.MAX_PAYLOAD_ARRAY_POOL_SIZE);
 
             byte seq = _sessionState.NextSequence();
-            int length;
-
-            if (version == MavlinkPacketVersion.V1)
-            {
-                length = info is IMavlinkMessageInfo<T> typedV1
-                    ? MavlinkV1Serializer.Serialize(message, typedV1, seq, _systemId, _componentId, buffer)
-                    : MavlinkV1Serializer.Serialize(message, info, seq, _systemId, _componentId, buffer);
-            }
-            else
-            {
-                length = info is IMavlinkMessageInfo<T> typedV2
-                    ? MavlinkV2Serializer.Serialize(message, typedV2, seq, _systemId, _componentId, buffer, _signer)
-                    : MavlinkV2Serializer.Serialize(message, info, seq, _systemId, _componentId, buffer, _signer);
-            }
+            int length = MavlinkSerializer.Serialize(
+                message, info, seq, _systemId, _componentId,
+                buffer, version, _signer);
 
 #if NETSTANDARD2_1_OR_GREATER
             await _stream.WriteAsync(buffer.AsMemory(0, length), ct).ConfigureAwait(false);
