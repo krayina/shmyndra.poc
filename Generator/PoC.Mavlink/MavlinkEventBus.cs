@@ -33,26 +33,21 @@ internal sealed class MavlinkEventBus
     {
         if (_typed.TryGetValue(context.Message.GetType(), out var list))
         {
-            var handlers = list.Snapshot;
-            for (int i = 0; i < handlers.Length; i++)
-            {
-                try
-                {
-                    handlers[i].Invoke(context);
-                }
-                catch (Exception ex)
-                {
-                    OnError?.Invoke(ex);
-                }
-            }
+            InvokeHandlers(list.Snapshot, in context);
         }
 
-        var all = _all.Snapshot;
-        for (int i = 0; i < all.Length; i++)
+        InvokeHandlers(_all.Snapshot, in context);
+    }
+
+    private void InvokeHandlers(
+        IMavlinkReceivedPacketCallback[] handlers,
+        in MavlinkReceivedPacket context)
+    {
+        for (int i = 0; i < handlers.Length; i++)
         {
             try
             {
-                all[i].Invoke(context);
+                handlers[i].Invoke(in context);
             }
             catch (Exception ex)
             {
