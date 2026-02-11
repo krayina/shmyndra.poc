@@ -30,10 +30,10 @@ public sealed class MavlinkClient : IDisposable
     public MavlinkSessionState Session => _sessionState;
     public MavlinkPacketVersion DefaultSendVersion { get; set; } = MavlinkPacketVersion.V2;
 
-    public Action<Exception>? OnHandlerError
+    public Action<Exception>? ErrorReceived
     {
-        get => _eventBus.OnError;
-        set => _eventBus.OnError = value;
+        get => _eventBus.ErrorReceived;
+        set => _eventBus.ErrorReceived = value;
     }
 
     public Action? OnReadingStopped { get; set; }
