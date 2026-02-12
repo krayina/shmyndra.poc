@@ -7,7 +7,16 @@ internal sealed class MavlinkEventBus
     private readonly ConcurrentDictionary<Type, MavlinkReceivedPacketCallbackRegistry> _typed = new();
     private readonly MavlinkReceivedPacketCallbackRegistry _all = new();
 
-    internal Action<Exception>? ErrorReceived { get; set; }
+    internal event Action<Exception>? ErrorReceived;
+
+    internal void RaiseError(Exception ex)
+    {
+        try
+        {
+            ErrorReceived?.Invoke(ex);
+        }
+        catch { /* prevent cascading failures */ }
+    }
 
     public IDisposable Subscribe<T>(
         Action<T, MavlinkReceivedPacket> callback,
@@ -51,7 +60,7 @@ internal sealed class MavlinkEventBus
             }
             catch (Exception ex)
             {
-                ErrorReceived?.Invoke(ex);
+                RaiseError(ex);
             }
         }
     }

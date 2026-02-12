@@ -14,11 +14,12 @@ namespace Mavlink;
 public sealed class MavlinkSigner : IDisposable
 {
     private readonly byte[] _secretKey;
-    private readonly object _syncLock = new object();
+    private readonly object _timestampLock = new();
     private ulong _lastTimestamp;
 
 #if !NET6_0_OR_GREATER
     private readonly SHA256 _hasher;
+    private readonly object _hasherLock = new();
 #endif
 
     /// <summary>
@@ -33,7 +34,7 @@ public sealed class MavlinkSigner : IDisposable
     {
         get
         {
-            lock (_syncLock)
+            lock (_timestampLock)
             {
                 return _lastTimestamp;
             }
@@ -51,7 +52,8 @@ public sealed class MavlinkSigner : IDisposable
         {
             throw new ArgumentException("Key must be 32 bytes", nameof(secretKey));
         }
-        _secretKey = secretKey;
+        _secretKey = new byte[32];
+        secretKey.AsSpan().CopyTo(_secretKey);
         LinkId = linkId;
         _lastTimestamp = 0;
 
@@ -81,7 +83,7 @@ public sealed class MavlinkSigner : IDisposable
     {
         const long ticks2015 = 635556672000000000;
 
-        lock (_syncLock)
+        lock (_timestampLock)
         {
             ulong now = (ulong)((DateTime.UtcNow.Ticks - ticks2015) / 100);
 
@@ -113,7 +115,7 @@ public sealed class MavlinkSigner : IDisposable
         SHA256.HashData(buffer, sha256Output);
         sha256Output.Slice(0, 6).CopyTo(output48bit);
 #else
-        lock (_syncLock)
+        lock (_hasherLock)
         {
 #if NETSTANDARD2_1_OR_GREATER || NETCOREAPP2_1_OR_GREATER
             Span<byte> sha256Output = stackalloc byte[32];

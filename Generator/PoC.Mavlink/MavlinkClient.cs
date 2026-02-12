@@ -14,56 +14,65 @@ public sealed class MavlinkClient : IDisposable
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     private readonly MavlinkEventBus _eventBus = new();
-    private readonly MavlinkDispatcher _dispatcher;
+    private readonly MavlinkDispatcher? _dispatcher;
     private readonly MavlinkSessionState _sessionState = new();
-    private readonly MavlinkFrameReader _framer = new();
-    private readonly CancellationTokenSource _cts = new();
+    private readonly MavlinkDiagnostics _diagnostics = new();
+    private readonly MavlinkFrameReader? _framer;
+    private readonly CancellationTokenSource? _cts;
 
     private readonly byte _systemId;
     private readonly byte _componentId;
+    private readonly bool _readingEnabled;
 
-    private readonly object _startLock = new();
-    private Task? _readTask;
-    private volatile bool _started;
-    private volatile bool _disposed;
+    private readonly Task? _readTask;
+    private int _disposed;
+
+    private volatile MavlinkPacketVersion _defaultSendVersion;
 
     public MavlinkSessionState Session => _sessionState;
-    public MavlinkPacketVersion DefaultSendVersion { get; set; } = MavlinkPacketVersion.V2;
+    public MavlinkDiagnostics Diagnostics => _diagnostics;
 
-    public Action<Exception>? ErrorReceived
+    public MavlinkPacketVersion DefaultSendVersion
     {
-        get => _eventBus.ErrorReceived;
-        set => _eventBus.ErrorReceived = value;
+        get => _defaultSendVersion;
+        set => _defaultSendVersion = value;
     }
 
-    public Action? OnReadingStopped { get; set; }
+    public event Action<Exception>? ErrorReceived
+    {
+        add => _eventBus.ErrorReceived += value;
+        remove => _eventBus.ErrorReceived -= value;
+    }
+
+    public event Action? ReadingStopped;
 
     public MavlinkClient(
         IMavlinkPort port,
         byte systemId,
         byte componentId,
+        MavlinkClientOptions? options = null,
         params IMavlinkDialect[] dialects)
     {
         _port = port ?? throw new ArgumentNullException(nameof(port));
         _systemId = systemId;
         _componentId = componentId;
         _dialect = PrepareDialectOrThrow(dialects);
-        _dispatcher = new MavlinkDispatcher(_eventBus);
-    }
 
-    public MavlinkClient(
-        IMavlinkPort port,
-        byte systemId,
-        byte componentId,
-        MavlinkSigner signer,
-        params IMavlinkDialect[] dialects)
-    {
-        _port = port ?? throw new ArgumentNullException(nameof(port));
-        _systemId = systemId;
-        _componentId = componentId;
-        _signer = signer ?? throw new ArgumentNullException(nameof(signer));
-        _dialect = PrepareDialectOrThrow(dialects);
-        _dispatcher = new MavlinkDispatcher(_eventBus);
+        options ??= new MavlinkClientOptions();
+        options.Validate();
+
+        _signer = options.Signer;
+        _readingEnabled = options.Mode == MavlinkClientMode.ReadWrite;
+        _defaultSendVersion = options.DefaultSendVersion;
+
+        if (_readingEnabled)
+        {
+            _framer = new MavlinkFrameReader();
+            _cts = new CancellationTokenSource();
+            _dispatcher = new MavlinkDispatcher(_eventBus, options.DispatchChannelCapacity);
+            _dispatcher.Start(_cts.Token);
+            _readTask = Task.Run(() => ReadLoopAsync(_cts.Token));
+        }
     }
 
     public IDisposable Subscribe<T>(
@@ -71,26 +80,37 @@ public sealed class MavlinkClient : IDisposable
         Func<MavlinkReceivedPacket, bool>? filter = null)
         where T : IMavlinkMessage
     {
-        var sub = _eventBus.Subscribe(callback, filter);
-        EnsureStarted();
-        return sub;
+        ThrowIfDisposed();
+        ThrowIfReadingDisabled();
+        return _eventBus.Subscribe(callback, filter);
     }
 
     public IDisposable Subscribe<T>(Action<T> callback)
         where T : IMavlinkMessage
     {
-        var sub = _eventBus.Subscribe<T>((msg, _) => callback(msg));
-        EnsureStarted();
-        return sub;
+        ThrowIfDisposed();
+        ThrowIfReadingDisabled();
+        return _eventBus.Subscribe<T>((msg, _) => callback(msg));
+    }
+
+    public IDisposable Subscribe<T>(
+        Action<T, MavlinkReceivedPacket> callback,
+        byte senderSystemId,
+        byte senderComponentId)
+        where T : IMavlinkMessage
+    {
+        return Subscribe<T>(callback,
+            pkt => pkt.SenderSystemId == senderSystemId
+                && pkt.SenderComponentId == senderComponentId);
     }
 
     public IDisposable SubscribeAll(
         Action<IMavlinkMessage, MavlinkReceivedPacket> callback,
         Func<MavlinkReceivedPacket, bool>? filter = null)
     {
-        var sub = _eventBus.SubscribeAll(callback, filter);
-        EnsureStarted();
-        return sub;
+        ThrowIfDisposed();
+        ThrowIfReadingDisabled();
+        return _eventBus.SubscribeAll(callback, filter);
     }
 
     public ValueTask SendAsync<T>(T message, CancellationToken ct = default)
@@ -117,19 +137,13 @@ public sealed class MavlinkClient : IDisposable
         MavlinkPacketVersion version, CancellationToken ct)
         where T : IMavlinkMessage
     {
-        if (_disposed)
-        {
-            throw new ObjectDisposedException(nameof(MavlinkClient));
-        }
+        ThrowIfDisposed();
 
         await _sendLock.WaitAsync(ct).ConfigureAwait(false);
         byte[]? buffer = null;
         try
         {
-            if (_disposed)
-            {
-                throw new ObjectDisposedException(nameof(MavlinkClient));
-            }
+            ThrowIfDisposed();
 
             buffer = ArrayPool<byte>.Shared.Rent(MavlinkConstants.MAX_PAYLOAD_ARRAY_POOL_SIZE);
             byte seq = _sessionState.NextSequence();
@@ -138,6 +152,7 @@ public sealed class MavlinkClient : IDisposable
                 buffer, version, _signer);
 
             await _port.WriteAsync(buffer.AsMemory(0, length), ct).ConfigureAwait(false);
+            _diagnostics.OnSent();
         }
         finally
         {
@@ -145,34 +160,11 @@ public sealed class MavlinkClient : IDisposable
             {
                 ArrayPool<byte>.Shared.Return(buffer);
             }
-            try
+
+            if (Volatile.Read(ref _disposed) == 0)
             {
                 _sendLock.Release();
             }
-            catch (ObjectDisposedException) { }
-        }
-    }
-
-    private void EnsureStarted()
-    {
-        if (_started)
-        {
-            return;
-        }
-        lock (_startLock)
-        {
-            if (_started)
-            {
-                return;
-            }
-            if (_disposed)
-            {
-                throw new ObjectDisposedException(nameof(MavlinkClient));
-            }
-
-            _dispatcher.Start(_cts.Token);
-            _readTask = Task.Run(() => ReadLoopAsync(_cts.Token));
-            _started = true;
         }
     }
 
@@ -188,6 +180,7 @@ public sealed class MavlinkClient : IDisposable
                 {
                     break;
                 }
+
                 EnqueueFrames(buffer, read);
             }
         }
@@ -197,26 +190,45 @@ public sealed class MavlinkClient : IDisposable
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
-            _dispatcher.Complete();
-            OnReadingStopped?.Invoke();
+            _dispatcher!.Complete();
+
+            try
+            {
+                ReadingStopped?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                _eventBus.RaiseError(ex);
+            }
         }
     }
 
     private void EnqueueFrames(byte[] data, int count)
     {
-        _framer.Append(data, 0, count);
+        _framer!.Append(data, 0, count);
 
         while (_framer.TryReadFrame(out int offset, out int length, out var version))
         {
             var frame = _framer.RawBuffer.AsSpan(offset, length);
 
-            if (!MavlinkDeserializer.TryDeserialize(frame, version, _dialect, out var packet))
+            var result = MavlinkDeserializer.TryDeserialize(
+                frame, version, _dialect, out var packet);
+
+            if (result != MavlinkDeserializeResult.Success)
             {
+                _diagnostics.OnDeserializeError(result);
                 continue;
             }
 
+            _diagnostics.OnReceived();
+            _diagnostics.TrackSequence(
+                packet.SenderSystemId, packet.SenderComponentId, packet.Sequence);
             _sessionState.UpdateFromPacket(version, packet.IsSigned);
-            _dispatcher.TryEnqueue(in packet);
+
+            _dispatcher!.TryEnqueue(in packet);
+            // Note: with DropOldest, TryWrite always succeeds.
+            // Channel overflow is silent — tracked via OnChannelOverflow
+            // if custom channel wrapper is used.
         }
 
         _framer.CompactIfNeeded();
@@ -224,14 +236,34 @@ public sealed class MavlinkClient : IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
         {
             return;
         }
-        _disposed = true;
 
-        _cts.Cancel();
-        _dispatcher.Dispose();
+        if (_readingEnabled)
+        {
+            _cts!.Cancel();
+
+            try
+            {
+                _readTask!.GetAwaiter().GetResult();
+            }
+            catch { }
+
+            _dispatcher!.Complete();
+
+            try
+            {
+                _dispatcher.DrainAsync().GetAwaiter().GetResult();
+            }
+            catch { }
+
+            _cts.Dispose();
+            _dispatcher.Dispose();
+        }
+
+        _diagnostics.Dispose();
         _sendLock.Dispose();
         _port.Dispose();
     }
@@ -239,27 +271,29 @@ public sealed class MavlinkClient : IDisposable
 #if NETSTANDARD2_1_OR_GREATER
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
         {
             return;
         }
-        _disposed = true;
 
-        _cts.Cancel();
-
-        if (_readTask != null)
+        if (_readingEnabled)
         {
+            _cts!.Cancel();
+
             try
             {
-                await _readTask.ConfigureAwait(false);
+                await _readTask!.ConfigureAwait(false);
             }
             catch { }
+
+            _dispatcher!.Complete();
+            await _dispatcher.DrainAsync().ConfigureAwait(false);
+
+            _cts.Dispose();
+            _dispatcher.Dispose();
         }
 
-        await _dispatcher.DrainAsync().ConfigureAwait(false);
-
-        _cts.Dispose();
-        _dispatcher.Dispose();
+        _diagnostics.Dispose();
         _sendLock.Dispose();
 
         if (_port is IAsyncDisposable asyncPort)
@@ -273,16 +307,35 @@ public sealed class MavlinkClient : IDisposable
     }
 #endif
 
+    private void ThrowIfDisposed()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(MavlinkClient));
+        }
+    }
+
+    private void ThrowIfReadingDisabled()
+    {
+        if (!_readingEnabled)
+        {
+            throw new InvalidOperationException(
+                "Reading is disabled. Set Mode = ReadWrite in MavlinkClientOptions.");
+        }
+    }
+
     private static IMavlinkDialect PrepareDialectOrThrow(IMavlinkDialect[] dialects)
     {
         if (dialects == null || dialects.Length == 0)
         {
-            throw new ArgumentException("At least one dialect is required.", nameof(dialects));
+            throw new ArgumentException(
+                "At least one dialect is required.", nameof(dialects));
         }
 
         if (dialects.Length == 1)
         {
-            return dialects[0] ?? throw new ArgumentException("Dialect cannot be null");
+            return dialects[0]
+                ?? throw new ArgumentException("Dialect cannot be null");
         }
 
         for (int i = 0; i < dialects.Length; i++)

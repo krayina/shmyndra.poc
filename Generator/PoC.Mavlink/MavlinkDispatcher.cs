@@ -5,21 +5,19 @@ namespace Mavlink;
 internal sealed class MavlinkDispatcher : IDisposable
 {
     private readonly MavlinkEventBus _eventBus;
+    private readonly Channel<MavlinkReceivedPacket> _channel;
+    private Task? _loopTask;
 
-    private readonly Channel<MavlinkReceivedPacket> _channel =
-        Channel.CreateBounded<MavlinkReceivedPacket>(
-            new BoundedChannelOptions(256)
+    public MavlinkDispatcher(MavlinkEventBus eventBus, int channelCapacity = 256)
+    {
+        _eventBus = eventBus ?? throw new ArgumentNullException(nameof(eventBus));
+        _channel = Channel.CreateBounded<MavlinkReceivedPacket>(
+            new BoundedChannelOptions(channelCapacity)
             {
                 SingleWriter = true,
                 SingleReader = true,
                 FullMode = BoundedChannelFullMode.DropOldest
             });
-
-    private Task? _loopTask;
-
-    public MavlinkDispatcher(MavlinkEventBus eventBus)
-    {
-        _eventBus = eventBus ?? throw new ArgumentNullException(nameof(eventBus));
     }
 
     public bool TryEnqueue(in MavlinkReceivedPacket packet)
@@ -47,7 +45,7 @@ internal sealed class MavlinkDispatcher : IDisposable
         if (_loopTask != null)
         {
             try { await _loopTask.ConfigureAwait(false); }
-            catch { /* OperationCanceledException expected */ }
+            catch { }
         }
     }
 

@@ -4,10 +4,10 @@ namespace Mavlink;
 
 public static class MavlinkV1Deserializer
 {
-    public static bool TryDeserialize(
-        ReadOnlySpan<byte> raw,
-        IMavlinkDialect dialect,
-        out MavlinkReceivedPacket context)
+    public static MavlinkDeserializeResult TryDeserialize(
+       ReadOnlySpan<byte> raw,
+       IMavlinkDialect dialect,
+       out MavlinkReceivedPacket context)
     {
         context = default;
 
@@ -16,14 +16,14 @@ public static class MavlinkV1Deserializer
         var info = dialect.GetInfo(frame.MessageId);
         if (info == null)
         {
-            return false;
+            return MavlinkDeserializeResult.UnknownMessageId;
         }
 
         ushort computed = X25Crc.Calculate(frame.CrcRegion);
         computed = X25Crc.Accumulate(computed, info.CrcExtra);
         if (frame.ReceivedCrc != computed)
         {
-            return false;
+            return MavlinkDeserializeResult.CrcMismatch;
         }
 
         var message = info.DeserializePayloadV1(frame.Payload);
@@ -36,6 +36,6 @@ public static class MavlinkV1Deserializer
             MavlinkPacketVersion.V1,
             isSigned: false);
 
-        return true;
+        return MavlinkDeserializeResult.Success;
     }
 }

@@ -6,6 +6,7 @@ public sealed class MavlinkUdpPort : IMavlinkPort
 {
     private readonly UdpClient _udp;
     private readonly bool _leaveOpen;
+    private int _disposed;
 
     public MavlinkUdpPort(UdpClient udp, bool leaveOpen = false)
     {
@@ -34,11 +35,15 @@ public sealed class MavlinkUdpPort : IMavlinkPort
     }
 
 #if !NET6_0_OR_GREATER
+    /// <summary>
+    /// On platforms without CancellationToken support, cancelling the read
+    /// closes the underlying socket. The port becomes unusable after cancellation.
+    /// </summary>
     private async Task<UdpReceiveResult> ReceiveWithCancellationAsync(CancellationToken ct)
     {
         var receiveTask = _udp.ReceiveAsync();
 
-        using (ct.Register(() => _udp.Dispose()))
+        using (ct.Register(() =>{ try { _udp.Client.Close(); } catch { } }))
         {
             try
             {
@@ -46,10 +51,12 @@ public sealed class MavlinkUdpPort : IMavlinkPort
             }
             catch (ObjectDisposedException) when (ct.IsCancellationRequested)
             {
+                Volatile.Write(ref _disposed, 1);
                 throw new OperationCanceledException(ct);
             }
             catch (SocketException) when (ct.IsCancellationRequested)
             {
+                Volatile.Write(ref _disposed, 1);
                 throw new OperationCanceledException(ct);
             }
         }
@@ -70,6 +77,11 @@ public sealed class MavlinkUdpPort : IMavlinkPort
 
     public void Dispose()
     {
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+        {
+            return;
+        }
+
         if (!_leaveOpen)
         {
             _udp.Dispose();

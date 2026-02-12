@@ -4,7 +4,7 @@ namespace Mavlink;
 
 internal static class MavlinkDeserializer
 {
-    public static bool TryDeserialize(
+    public static MavlinkDeserializeResult TryDeserialize(
         ReadOnlySpan<byte> frame,
         MavlinkPacketVersion version,
         IMavlinkDialect dialect,
@@ -18,7 +18,7 @@ internal static class MavlinkDeserializer
                 return MavlinkV1Deserializer.TryDeserialize(frame, dialect, out packet);
             default:
                 packet = default;
-                return false;
+                return MavlinkDeserializeResult.CrcMismatch;
         }
     }
 }
