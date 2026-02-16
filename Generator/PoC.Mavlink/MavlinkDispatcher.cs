@@ -25,14 +25,14 @@ internal sealed class MavlinkDispatcher : IDisposable
         return _channel.Writer.TryWrite(packet);
     }
 
-    public void Start(CancellationToken ct)
+    public void Start()
     {
         if (_loopTask != null)
         {
             throw new InvalidOperationException("Already started.");
         }
 
-        _loopTask = Task.Run(() => DispatchLoopAsync(ct));
+        _loopTask = Task.Run(DispatchLoopAsync);
     }
 
     public void Complete()
@@ -44,23 +44,18 @@ internal sealed class MavlinkDispatcher : IDisposable
     {
         if (_loopTask != null)
         {
-            try { await _loopTask.ConfigureAwait(false); }
-            catch { }
+            await _loopTask.ConfigureAwait(false);
         }
     }
 
-    private async Task DispatchLoopAsync(CancellationToken ct)
+    private async Task DispatchLoopAsync()
     {
-        try
+        await foreach (var packet in _channel.Reader
+                           .ReadAllAsync()
+                           .ConfigureAwait(false))
         {
-            await foreach (var packet in _channel.Reader
-                               .ReadAllAsync(ct)
-                               .ConfigureAwait(false))
-            {
-                _eventBus.Publish(in packet);
-            }
+            _eventBus.Publish(in packet);
         }
-        catch (OperationCanceledException) { }
     }
 
     public void Dispose()

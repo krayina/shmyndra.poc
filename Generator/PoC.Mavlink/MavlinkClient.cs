@@ -70,7 +70,7 @@ public sealed class MavlinkClient : IDisposable
             _framer = new MavlinkFrameReader();
             _cts = new CancellationTokenSource();
             _dispatcher = new MavlinkDispatcher(_eventBus, options.DispatchChannelCapacity);
-            _dispatcher.Start(_cts.Token);
+            _dispatcher.Start();
             _readTask = Task.Run(() => ReadLoopAsync(_cts.Token));
         }
     }
@@ -161,10 +161,11 @@ public sealed class MavlinkClient : IDisposable
                 ArrayPool<byte>.Shared.Return(buffer);
             }
 
-            if (Volatile.Read(ref _disposed) == 0)
+            try
             {
                 _sendLock.Release();
             }
+            catch (ObjectDisposedException) { }
         }
     }
 
@@ -222,13 +223,12 @@ public sealed class MavlinkClient : IDisposable
 
             _diagnostics.OnReceived();
             _diagnostics.TrackSequence(
-                packet.SenderSystemId, packet.SenderComponentId, packet.Sequence);
+                packet.SenderSystemId,
+                packet.SenderComponentId,
+                packet.Sequence);
             _sessionState.UpdateFromPacket(version, packet.IsSigned);
 
             _dispatcher!.TryEnqueue(in packet);
-            // Note: with DropOldest, TryWrite always succeeds.
-            // Channel overflow is silent — tracked via OnChannelOverflow
-            // if custom channel wrapper is used.
         }
 
         _framer.CompactIfNeeded();
