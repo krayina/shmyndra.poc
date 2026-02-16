@@ -6,16 +6,12 @@ public sealed class MavlinkSessionState
     private int _version;
     private int _signed;
 
-    public MavlinkSessionVersion Version
-        => (MavlinkSessionVersion)Volatile.Read(ref _version);
-
-    public bool IsSigned
-        => Volatile.Read(ref _signed) != 0;
+    public MavlinkSessionVersion Version => (MavlinkSessionVersion)Volatile.Read(ref _version);
+    public bool IsSigned => Volatile.Read(ref _signed) != 0;
 
     public event Action<MavlinkSessionVersion>? VersionChanged;
 
-    public byte NextSequence()
-        => (byte)Interlocked.Increment(ref _sequence);
+    public byte NextSequence() => (byte)Interlocked.Increment(ref _sequence);
 
     internal void UpdateFromPacket(MavlinkPacketVersion packetVersion, bool signed)
     {
