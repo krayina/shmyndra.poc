@@ -15,7 +15,7 @@ public static class MavlinkV1Serializer
 #if NETSTANDARD2_1_OR_GREATER
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
 #endif
-    public static int SerializeV1<T>(
+    public static int Serialize<T>(
         T message,
         IMavlinkMessageInfo<T> info,
         byte sequence,
