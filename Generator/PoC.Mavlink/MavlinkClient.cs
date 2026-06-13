@@ -18,7 +18,9 @@ public sealed class MavlinkClient : IDisposable
     private readonly MavlinkDiagnostics _diagnostics = new();
     private readonly MavlinkFrameReader? _framer;
     private readonly CancellationTokenSource? _cts;
+
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly byte[] _sendBuffer = new byte[MavlinkConstants.MAX_PAYLOAD_ARRAY_POOL_SIZE];
 
     private readonly byte _systemId;
     private readonly byte _componentId;
@@ -142,27 +144,20 @@ public sealed class MavlinkClient : IDisposable
         ThrowIfDisposed();
 
         await _sendLock.WaitAsync(ct).ConfigureAwait(false);
-        byte[]? buffer = null;
         try
         {
             ThrowIfDisposed();
 
-            buffer = ArrayPool<byte>.Shared.Rent(MavlinkConstants.MAX_PAYLOAD_ARRAY_POOL_SIZE);
             byte seq = _sessionState.NextSequence();
             int length = MavlinkSerializer.Serialize(
                 message, info, seq, _systemId, _componentId,
-                buffer, version, _signer);
+                _sendBuffer, version, _signer);
 
-            await _port.WriteAsync(buffer.AsMemory(0, length), ct).ConfigureAwait(false);
+            await _port.WriteAsync(_sendBuffer.AsMemory(0, length), ct).ConfigureAwait(false);
             _diagnostics.OnSent();
         }
         finally
         {
-            if (buffer != null)
-            {
-                ArrayPool<byte>.Shared.Return(buffer);
-            }
-
             try
             {
                 _sendLock.Release();
