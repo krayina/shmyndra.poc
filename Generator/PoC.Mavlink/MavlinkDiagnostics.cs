@@ -10,6 +10,7 @@ public sealed class MavlinkDiagnostics : IDisposable
     private long _crcErrors;
     private long _unknownMessages;
     private long _sequenceErrors;
+    private long _badFrameErrors;
 
     private readonly ConcurrentDictionary<ushort, byte> _lastSequence = new();
 
@@ -85,6 +86,10 @@ public sealed class MavlinkDiagnostics : IDisposable
                 break;
             case MavlinkDeserializeResult.UnknownMessageId:
                 Interlocked.Increment(ref _unknownMessages);
+                break;
+            case MavlinkDeserializeResult.UnknownVersion:
+            case MavlinkDeserializeResult.InvalidFrameLength:
+                Interlocked.Increment(ref _badFrameErrors);
                 break;
         }
         NotifyIfSubscribed();

@@ -1,6 +1,6 @@
 ﻿namespace Mavlink.Common;
 
-public sealed record HeartbeatMavlinkMessage : IMavlinkMessage
+public readonly record struct HeartbeatMavlinkMessage : IMavlinkMessage
 {
 	public MavType Type { get; init; }
 	public MavAutopilot Autopilot { get; init; }

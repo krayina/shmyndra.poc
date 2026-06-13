@@ -2,16 +2,21 @@
 
 namespace Mavlink;
 
-public static class MavlinkV2Deserializer
+internal static class MavlinkV1PacketParser
 {
-    public static MavlinkDeserializeResult TryDeserialize(
+    public static MavlinkDeserializeResult TryParse(
         ReadOnlySpan<byte> raw,
         IMavlinkDialect dialect,
-        out MavlinkReceivedPacket context)
+        out MavlinkReceivedPacket packet)
     {
-        context = default;
+        packet = default;
 
-        var frame = new MavlinkV2Frame(raw);
+        if (raw.Length < MavlinkConstants.HEADER_V1_LENGTH + 2)
+        {
+            return MavlinkDeserializeResult.InvalidFrameLength;
+        }
+
+        var frame = new MavlinkV1Frame(raw);
 
         var info = dialect.GetInfo(frame.MessageId);
         if (info == null)
@@ -26,15 +31,14 @@ public static class MavlinkV2Deserializer
             return MavlinkDeserializeResult.CrcMismatch;
         }
 
-        var message = info.DeserializePayloadV2(frame.Payload);
-
-        context = new MavlinkReceivedPacket(
-            message,
+        packet = new MavlinkReceivedPacket(
+            frame.MessageId,
             frame.SystemId,
             frame.ComponentId,
             frame.Sequence,
-            MavlinkPacketVersion.V2,
-            frame.IsSigned);
+            MavlinkPacketVersion.V1,
+            isSigned: false,
+            frame.Payload);
 
         return MavlinkDeserializeResult.Success;
     }

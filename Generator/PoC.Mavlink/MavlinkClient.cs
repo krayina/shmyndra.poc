@@ -11,14 +11,14 @@ public sealed class MavlinkClient : IDisposable
     private readonly IMavlinkPort _port;
     private readonly IMavlinkDialect _dialect;
     private readonly MavlinkSigner? _signer;
-    private readonly SemaphoreSlim _sendLock = new(1, 1);
-
-    private readonly MavlinkEventBus _eventBus = new();
+    private readonly MavlinkEventBus _eventBus;
     private readonly MavlinkDispatcher? _dispatcher;
+
     private readonly MavlinkSessionState _sessionState = new();
     private readonly MavlinkDiagnostics _diagnostics = new();
     private readonly MavlinkFrameReader? _framer;
     private readonly CancellationTokenSource? _cts;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     private readonly byte _systemId;
     private readonly byte _componentId;
@@ -56,7 +56,9 @@ public sealed class MavlinkClient : IDisposable
         _port = port ?? throw new ArgumentNullException(nameof(port));
         _systemId = systemId;
         _componentId = componentId;
+
         _dialect = PrepareDialectOrThrow(dialects);
+        _eventBus = new MavlinkEventBus(_dialect);
 
         options ??= new MavlinkClientOptions();
         options.Validate();
@@ -78,7 +80,7 @@ public sealed class MavlinkClient : IDisposable
     public IDisposable Subscribe<T>(
         Action<T, MavlinkReceivedPacket> callback,
         Func<MavlinkReceivedPacket, bool>? filter = null)
-        where T : IMavlinkMessage
+        where T : struct, IMavlinkMessage
     {
         ThrowIfDisposed();
         ThrowIfReadingDisabled();
@@ -86,7 +88,7 @@ public sealed class MavlinkClient : IDisposable
     }
 
     public IDisposable Subscribe<T>(Action<T> callback)
-        where T : IMavlinkMessage
+        where T : struct, IMavlinkMessage
     {
         ThrowIfDisposed();
         ThrowIfReadingDisabled();
@@ -97,7 +99,7 @@ public sealed class MavlinkClient : IDisposable
         Action<T, MavlinkReceivedPacket> callback,
         byte senderSystemId,
         byte senderComponentId)
-        where T : IMavlinkMessage
+        where T : struct, IMavlinkMessage
     {
         return Subscribe<T>(callback,
             pkt => pkt.SenderSystemId == senderSystemId
@@ -212,7 +214,7 @@ public sealed class MavlinkClient : IDisposable
         {
             var frame = _framer.RawBuffer.AsSpan(offset, length);
 
-            var result = MavlinkDeserializer.TryDeserialize(
+            var result = MavlinkPacketParser.TryParse(
                 frame, version, _dialect, out var packet);
 
             if (result != MavlinkDeserializeResult.Success)

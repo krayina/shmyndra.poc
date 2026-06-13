@@ -1,24 +1,23 @@
-﻿using Mavlink.Dialects;
+﻿namespace Mavlink;
 
-namespace Mavlink;
-
-internal static class MavlinkDeserializer
+public static class MavlinkDeserializer
 {
-    public static MavlinkDeserializeResult TryDeserialize(
-        ReadOnlySpan<byte> frame,
-        MavlinkPacketVersion version,
-        IMavlinkDialect dialect,
-        out MavlinkReceivedPacket packet)
+    public static T Deserialize<T>(
+        in MavlinkReceivedPacket packet,
+        IMavlinkMessageInfo<T> info)
+        where T : struct, IMavlinkMessage
     {
-        switch (version)
-        {
-            case MavlinkPacketVersion.V2:
-                return MavlinkV2Deserializer.TryDeserialize(frame, dialect, out packet);
-            case MavlinkPacketVersion.V1:
-                return MavlinkV1Deserializer.TryDeserialize(frame, dialect, out packet);
-            default:
-                packet = default;
-                return MavlinkDeserializeResult.CrcMismatch;
-        }
+        return packet.Version == MavlinkPacketVersion.V2
+            ? info.PayloadSerializer.DeserializeV2(packet.Payload)
+            : info.PayloadSerializer.DeserializeV1(packet.Payload);
+    }
+
+    public static IMavlinkMessage Deserialize(
+        in MavlinkReceivedPacket packet,
+        IMavlinkMessageInfo info)
+    {
+        return packet.Version == MavlinkPacketVersion.V2
+            ? info.DeserializePayloadV2(packet.Payload)
+            : info.DeserializePayloadV1(packet.Payload);
     }
 }
