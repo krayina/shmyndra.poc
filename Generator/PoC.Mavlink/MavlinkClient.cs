@@ -14,7 +14,6 @@ public sealed class MavlinkClient : IDisposable
     private readonly MavlinkEventBus _eventBus;
     private readonly MavlinkDispatcher? _dispatcher;
 
-    private readonly MavlinkSessionState _sessionState = new();
     private readonly MavlinkDiagnostics _diagnostics = new();
     private readonly MavlinkFrameReader? _framer;
     private readonly CancellationTokenSource? _cts;
@@ -31,7 +30,6 @@ public sealed class MavlinkClient : IDisposable
 
     private volatile MavlinkPacketVersion _defaultSendVersion;
 
-    public MavlinkSessionState Session => _sessionState;
     public MavlinkDiagnostics Diagnostics => _diagnostics;
 
     public MavlinkPacketVersion DefaultSendVersion
@@ -148,7 +146,7 @@ public sealed class MavlinkClient : IDisposable
         {
             ThrowIfDisposed();
 
-            byte seq = _sessionState.NextSequence();
+            ?? throw new ArgumentException($"Type {message.GetType().Name} not registered");
             int length = MavlinkSerializer.Serialize(
                 message, info, seq, _systemId, _componentId,
                 _sendBuffer, version, _signer);
@@ -223,7 +221,6 @@ public sealed class MavlinkClient : IDisposable
                 packet.SenderSystemId,
                 packet.SenderComponentId,
                 packet.Sequence);
-            _sessionState.UpdateFromPacket(version, packet.IsSigned);
 
             _dispatcher!.TryEnqueue(in packet);
         }
