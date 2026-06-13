@@ -73,7 +73,7 @@ public sealed class MavlinkClient : IDisposable
             _cts = new CancellationTokenSource();
             _dispatcher = new MavlinkDispatcher(_eventBus, options.DispatchChannelCapacity);
             _dispatcher.Start();
-            _readTask = Task.Run(() => ReadLoopAsync(_cts.Token));
+            _readTask = ReadLoopAsync(_cts.Token);
         }
     }
 
