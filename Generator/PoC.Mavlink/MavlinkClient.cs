@@ -17,9 +17,7 @@ public sealed class MavlinkClient : IDisposable
     private readonly MavlinkDiagnostics _diagnostics = new();
     private readonly MavlinkFrameReader? _framer;
     private readonly CancellationTokenSource? _cts;
-
-    private readonly SemaphoreSlim _sendLock = new(1, 1);
-    private readonly byte[] _sendBuffer = new byte[MavlinkConstants.MAX_PAYLOAD_ARRAY_POOL_SIZE];
+    private readonly MavlinkSender _sender;
 
     private readonly byte _systemId;
     private readonly byte _componentId;
@@ -59,11 +57,11 @@ public sealed class MavlinkClient : IDisposable
 
         _dialect = PrepareDialectOrThrow(dialects);
         _eventBus = new MavlinkEventBus(_dialect);
-
         options ??= new MavlinkClientOptions();
         options.Validate();
 
         _signer = options.Signer;
+        _sender = new MavlinkSender(_port, _systemId, _componentId, _signer);
         _readingEnabled = options.Mode == MavlinkClientMode.ReadWrite;
         _defaultSendVersion = options.DefaultSendVersion;
 
@@ -116,52 +114,20 @@ public sealed class MavlinkClient : IDisposable
     }
 
     public ValueTask SendAsync<T>(T message, CancellationToken ct = default)
-        where T : IMavlinkMessage
-    {
-        return SendAsync(message, DefaultSendVersion, ct);
-    }
-
-    public ValueTask SendAsync<T>(
-        T message, MavlinkPacketVersion version, CancellationToken ct = default)
-        where T : IMavlinkMessage
-    {
-        var info = _dialect.GetInfo(typeof(T))
-            ?? throw new ArgumentException($"Type {typeof(T).Name} not registered");
-
-        return SendCoreAsync(message, info, version, ct);
-    }
-
-#if NET6_0_OR_GREATER
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-#endif
-    private async ValueTask SendCoreAsync<T>(
-        T message, IMavlinkMessageInfo info,
-        MavlinkPacketVersion version, CancellationToken ct)
-        where T : IMavlinkMessage
+        where T : struct, IMavlinkMessage
     {
         ThrowIfDisposed();
+        var info = _dialect.GetInfo(typeof(T))
+            ?? throw new ArgumentException($"Type {typeof(T).Name} not registered");
+        return _sender.SendAsync(message, info, DefaultSendVersion, ct);
+    }
 
-        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            ThrowIfDisposed();
-
+    public ValueTask SendAsync(IMavlinkMessage message, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        var info = _dialect.GetInfo(message.GetType())
             ?? throw new ArgumentException($"Type {message.GetType().Name} not registered");
-            int length = MavlinkSerializer.Serialize(
-                message, info, seq, _systemId, _componentId,
-                _sendBuffer, version, _signer);
-
-            await _port.WriteAsync(_sendBuffer.AsMemory(0, length), ct).ConfigureAwait(false);
-            _diagnostics.OnSent();
-        }
-        finally
-        {
-            try
-            {
-                _sendLock.Release();
-            }
-            catch (ObjectDisposedException) { }
-        }
+        return _sender.SendAsync(message, info, DefaultSendVersion, ct);
     }
 
     private async Task ReadLoopAsync(CancellationToken ct)
@@ -258,7 +224,7 @@ public sealed class MavlinkClient : IDisposable
         }
 
         _diagnostics.Dispose();
-        _sendLock.Dispose();
+        _sender.Dispose();
         _port.Dispose();
     }
 
@@ -288,7 +254,7 @@ public sealed class MavlinkClient : IDisposable
         }
 
         _diagnostics.Dispose();
-        _sendLock.Dispose();
+        _sender.Dispose();
 
         if (_port is IAsyncDisposable asyncPort)
         {
