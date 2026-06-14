@@ -1,5 +1,6 @@
 ﻿using Mavlink.Dialects;
 using System.Buffers;
+using System.IO.Pipelines;
 
 namespace Mavlink;
 
@@ -132,16 +133,129 @@ public sealed class MavlinkClient : IDisposable
 
     private async Task ReadLoopAsync(CancellationToken ct)
     {
+#if NETSTANDARD2_1_OR_GREATER
+        if (_port.Reader != null)
+        {
+            await ReadLoopPipelinesAsync(_port.Reader, ct).ConfigureAwait(false);
+            return;
+        }
+#endif
+        await ReadLoopFallbackAsync(ct).ConfigureAwait(false);
+    }
+
+#if NETSTANDARD2_1_OR_GREATER
+    private async Task ReadLoopPipelinesAsync(PipeReader reader, CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                ReadResult result = await reader.ReadAsync(ct).ConfigureAwait(false);
+                ReadOnlySequence<byte> buffer = result.Buffer;
+
+                SequencePosition consumed = EnqueueFramesFromSequence(buffer);
+                reader.AdvanceTo(consumed, buffer.End);
+
+                if (result.IsCompleted) break;
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            await reader.CompleteAsync().ConfigureAwait(false);
+            _dispatcher!.Complete();
+            ReadingStopped?.Invoke();
+        }
+    }
+
+    private SequencePosition EnqueueFramesFromSequence(ReadOnlySequence<byte> sequence)
+    {
+        var reader = new SequenceReader<byte>(sequence);
+
+        while (true)
+        {
+            if (!reader.TryAdvanceTo(MavlinkConstants.MAGIC_V2, advancePastDelimiter: false) &&
+                !reader.TryAdvanceTo(MavlinkConstants.MAGIC_V1, advancePastDelimiter: false))
+            {
+                break;
+            }
+
+            var peekReader = reader;
+            if (peekReader.Remaining < 2) break;
+
+            peekReader.TryRead(out byte magicByte);
+            peekReader.TryRead(out byte lenByte);
+
+            MavlinkPacketVersion version = (magicByte == MavlinkConstants.MAGIC_V2)
+                ? MavlinkPacketVersion.V2
+                : MavlinkPacketVersion.V1;
+
+            int headerLen = (version == MavlinkPacketVersion.V2) ? 10 : 6;
+            int fullLength = headerLen + lenByte + 2;
+
+            if (version == MavlinkPacketVersion.V2)
+            {
+                if (peekReader.TryRead(out byte incompatFlags) && (incompatFlags & 0x01) != 0)
+                {
+                    fullLength += 13;
+                }
+            }
+
+            if (reader.Remaining < fullLength) break;
+
+            ReadOnlySequence<byte> packetSlice = reader.Sequence.Slice(reader.Position, fullLength);
+            bool isParsedSuccessfully;
+
+            if (packetSlice.IsSingleSegment)
+            {
+                isParsedSuccessfully = ParseAndDispatcherFrame(packetSlice.FirstSpan, version);
+            }
+            else
+            {
+                Span<byte> stackBuffer = stackalloc byte[fullLength];
+                packetSlice.CopyTo(stackBuffer);
+                isParsedSuccessfully = ParseAndDispatcherFrame(stackBuffer, version);
+            }
+
+            if (isParsedSuccessfully)
+            {
+                reader.Advance(fullLength);
+            }
+            else
+            {
+                reader.Advance(1);
+            }
+        }
+
+        return reader.Position;
+    }
+
+    private bool ParseAndDispatcherFrame(ReadOnlySpan<byte> frame, MavlinkPacketVersion version)
+    {
+        var result = MavlinkPacketParser.TryParse(frame, version, _dialect, out var packet);
+
+        if (result != MavlinkDeserializeResult.Success)
+        {
+            _diagnostics.OnDeserializeError(result);
+            return false;
+        }
+
+        _diagnostics.OnReceived();
+        _diagnostics.TrackSequence(packet.SenderSystemId, packet.SenderComponentId, packet.Sequence);
+        _dispatcher!.TryEnqueue(in packet);
+        return true;
+    }
+#endif
+
+    private async Task ReadLoopFallbackAsync(CancellationToken ct)
+    {
         var buffer = ArrayPool<byte>.Shared.Rent(4096);
         try
         {
             while (!ct.IsCancellationRequested)
             {
                 int read = await _port.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
-                if (read == 0)
-                {
-                    break;
-                }
+                if (read == 0) break;
 
                 EnqueueFrames(buffer, read);
             }
@@ -172,9 +286,7 @@ public sealed class MavlinkClient : IDisposable
         while (_framer.TryReadFrame(out int offset, out int length, out var version))
         {
             var frame = _framer.RawBuffer.AsSpan(offset, length);
-
-            var result = MavlinkPacketParser.TryParse(
-                frame, version, _dialect, out var packet);
+            var result = MavlinkPacketParser.TryParse(frame, version, _dialect, out var packet);
 
             if (result != MavlinkDeserializeResult.Success)
             {
@@ -183,14 +295,9 @@ public sealed class MavlinkClient : IDisposable
             }
 
             _diagnostics.OnReceived();
-            _diagnostics.TrackSequence(
-                packet.SenderSystemId,
-                packet.SenderComponentId,
-                packet.Sequence);
-
+            _diagnostics.TrackSequence(packet.SenderSystemId, packet.SenderComponentId, packet.Sequence);
             _dispatcher!.TryEnqueue(in packet);
         }
-
         _framer.CompactIfNeeded();
     }
 
