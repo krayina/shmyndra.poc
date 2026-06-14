@@ -1,4 +1,6 @@
-﻿namespace Mavlink;
+﻿using System.Runtime.CompilerServices;
+
+namespace Mavlink;
 
 public sealed class MavlinkSender : IDisposable
 {
@@ -72,6 +74,9 @@ public sealed class MavlinkSender : IDisposable
         }
     }
 
+#if NETSTANDARD2_1_OR_GREATER
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#endif
     private byte NextSequence() => (byte)Interlocked.Increment(ref _sequence);
 
     public void Dispose()
