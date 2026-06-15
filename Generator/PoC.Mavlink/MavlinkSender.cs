@@ -2,7 +2,7 @@
 
 namespace Mavlink;
 
-public sealed class MavlinkSender : IDisposable
+internal sealed class MavlinkSender : IDisposable
 {
     private readonly byte _systemId;
     private readonly byte _componentId;
