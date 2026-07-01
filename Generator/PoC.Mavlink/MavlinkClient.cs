@@ -65,12 +65,6 @@ public sealed class MavlinkClient : IAsyncDisposable, IDisposable
     public ValueTask SendAsync(IMavlinkMessage message, CancellationToken ct = default)
         => _channel.SendAsync(message, ct);
 
-    private void ThrowIfDisposed()
-    {
-        if (Volatile.Read(ref _disposed) != 0)
-            throw new ObjectDisposedException(nameof(MavlinkClient));
-    }
-
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
