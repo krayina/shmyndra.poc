@@ -94,11 +94,9 @@ public sealed class MavlinkUdpPort : IMavlinkPort
         }
     }
 
-#if NETSTANDARD2_1_OR_GREATER
     public ValueTask DisposeAsync()
     {
         Dispose();
         return default;
     }
-#endif
 }

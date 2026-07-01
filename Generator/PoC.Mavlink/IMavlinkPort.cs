@@ -1,9 +1,6 @@
 ﻿namespace Mavlink;
 
-public interface IMavlinkPort : IDisposable
-#if NETSTANDARD2_1_OR_GREATER
-    , IAsyncDisposable
-#endif
+public interface IMavlinkPort : IDisposable, IAsyncDisposable
 {
     ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct);
     ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken ct);

@@ -96,7 +96,6 @@ public sealed class MavlinkStreamPort : IMavlinkPort
         }
     }
 
-#if NETSTANDARD2_1_OR_GREATER
     public async ValueTask DisposeAsync()
     {
         if (!_leaveOpen)
@@ -111,5 +110,4 @@ public sealed class MavlinkStreamPort : IMavlinkPort
             }
         }
     }
-#endif
 }
