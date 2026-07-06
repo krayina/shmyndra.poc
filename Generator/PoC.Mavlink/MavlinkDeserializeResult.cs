@@ -6,5 +6,6 @@ public enum MavlinkDeserializeResult : byte
     UnknownMessageId = 1,
     CrcMismatch = 2,
     UnknownVersion = 3,
-    InvalidFrameLength = 4
+    InvalidFrameLength = 4,
+    UnknownMagicByte = 5
 }

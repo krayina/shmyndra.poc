@@ -7,7 +7,7 @@ public sealed class DelegatePortProvider : IMavlinkPortProvider
     public DelegatePortProvider(Func<CancellationToken, ValueTask<IMavlinkPort>> factory)
         => _factory = factory;
 
-    public bool CanReconnect { get; init; } = true;
+    public bool CanRecreatePort { get; init; } = true;
 
     public ValueTask<IMavlinkPort> CreatePortAsync(CancellationToken ct) => _factory(ct);
 }
