@@ -5,37 +5,82 @@ namespace Mavlink;
 public sealed class MavlinkClient : IAsyncDisposable, IDisposable
 {
     private readonly IMavlinkConnection _connection;
-    private readonly MavlinkChannel _channel;
+    private readonly IMavlinkDialect _dialect;
+    private readonly MavlinkReceiver _receiver;
+    private readonly MavlinkSender _sender;
+    private readonly MavlinkDispatcher _dispatcher;
+    private readonly MavlinkEventBus _eventBus;
+    private readonly MavlinkDiagnostics _diagnostics;
     private readonly ConnectionWatchdog? _watchdog;
+
+    private volatile MavlinkPacketVersion _defaultSendVersion = MavlinkPacketVersion.V2;
     private int _disposed;
 
-    private MavlinkClient(IMavlinkConnection connection, MavlinkChannel channel, ConnectionWatchdog? watchdog)
+    private MavlinkClient(
+        IMavlinkConnection connection,
+        IMavlinkDialect dialect,
+        MavlinkReceiver receiver,
+        MavlinkSender sender,
+        MavlinkDispatcher dispatcher,
+        MavlinkEventBus eventBus,
+        MavlinkDiagnostics diagnostics,
+        ConnectionWatchdog? watchdog)
     {
         _connection = connection;
-        _channel = channel;
+        _dialect = dialect;
+        _receiver = receiver;
+        _sender = sender;
+        _dispatcher = dispatcher;
+        _eventBus = eventBus;
+        _diagnostics = diagnostics;
         _watchdog = watchdog;
 
         _connection.StateChanged += OnConnectionStateChanged;
+
+        _dispatcher.Start();
+        _receiver.Start();
     }
 
-    public MavlinkDiagnostics Diagnostics => _channel.Diagnostics;
-    public MavlinkConnectionState State => _channel.State;
+    public MavlinkDiagnostics Diagnostics => _diagnostics;
+    public MavlinkConnectionState State => _connection.State;
 
-    private void OnConnectionStateChanged(MavlinkConnectionStateChangedEventArgs args)
+    public MavlinkPacketVersion DefaultSendVersion
     {
-        if (_watchdog == null)
+        get => _defaultSendVersion;
+        set => _defaultSendVersion = value;
+    }
+
+    public Task ConnectAsync(CancellationToken ct = default)
+    {
+        return _connection.ConnectAsync(ct);
+    }
+
+    public Task DisconnectAsync(CancellationToken ct = default)
+    {
+        return _connection.DisconnectAsync(ct);
+    }
+
+    public IDisposable Subscribe<T>(
+        Action<T, MavlinkReceivedPacket> cb,
+        Func<MavlinkReceivedPacket, bool>? filter = null)
+        where T : struct, IMavlinkMessage
+    {
+        ThrowIfDisposed();
+        return _eventBus.Subscribe(cb, filter);
+    }
+
+    public ValueTask SendAsync<T>(T message, CancellationToken ct = default)
+        where T : struct, IMavlinkMessage
+    {
+        ThrowIfDisposed();
+
+        var info = _dialect.GetInfo(typeof(T));
+        if (info == null)
         {
-            return;
+            throw new ArgumentException($"{typeof(T).Name} not registered in dialect.");
         }
 
-        if (args.NewState == MavlinkConnectionState.Connected)
-        {
-            _watchdog.Start();
-        }
-        else
-        {
-            _watchdog.Stop();
-        }
+        return _sender.SendAsync(message, info, _defaultSendVersion, ct);
     }
 
     public static MavlinkClient Create(
@@ -49,7 +94,6 @@ public sealed class MavlinkClient : IAsyncDisposable, IDisposable
     {
         var provider = new DelegatePortProvider(portFactory);
         var policy = reconnectPolicy ?? NoReconnectPolicy.Instance;
-
         var connection = new MavlinkConnection(provider, policy);
 
         ConnectionWatchdog? watchdog = null;
@@ -68,45 +112,49 @@ public sealed class MavlinkClient : IAsyncDisposable, IDisposable
         var eventBus = new MavlinkEventBus(dialect);
         var dispatcher = new MavlinkDispatcher(eventBus);
         var diagnostics = new MavlinkDiagnostics();
-
         var processingStage = new PacketProcessingStage(dispatcher, diagnostics, onActivityCallback);
 
         var receiver = new MavlinkReceiver(connection.Input, dialect, processingStage, processingStage);
         var sender = new MavlinkSender(connection, systemId, componentId, signer);
 
-        var channel = new MavlinkChannel(connection, receiver, sender, dispatcher, eventBus, diagnostics)
+        return new MavlinkClient(
+            connection,
+            dialect,
+            receiver,
+            sender,
+            dispatcher,
+            eventBus,
+            diagnostics,
+            watchdog)
         {
             DefaultSendVersion = options.DefaultSendVersion
         };
-
-        return new MavlinkClient(connection, channel, watchdog);
     }
 
-    public Task ConnectAsync(CancellationToken ct = default)
+    private void OnConnectionStateChanged(MavlinkConnectionStateChangedEventArgs args)
     {
-        return _connection.ConnectAsync(ct);
+        if (_watchdog == null)
+        {
+            return;
+        }
+
+        if (args.NewState == MavlinkConnectionState.Connected)
+        {
+            _watchdog.Start();
+        }
+        else
+        {
+            _watchdog.Stop();
+        }
     }
 
-    public Task DisconnectAsync(CancellationToken ct = default)
+    private void ThrowIfDisposed()
     {
-        return _connection.DisconnectAsync(ct);
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(MavlinkClient));
+        }
     }
-
-    public IDisposable Subscribe<T>(
-        Action<T, MavlinkReceivedPacket> cb,
-        Func<MavlinkReceivedPacket, bool>? filter = null)
-        where T : struct, IMavlinkMessage
-    {
-        return _channel.Subscribe(cb, filter);
-    }
-
-    public ValueTask SendAsync<T>(
-        T message,
-        CancellationToken ct = default)
-        where T : struct, IMavlinkMessage
-    {
-        return _channel.SendAsync(message, ct);
-    } 
 
     public async ValueTask DisposeAsync()
     {
@@ -118,9 +166,16 @@ public sealed class MavlinkClient : IAsyncDisposable, IDisposable
         _connection.StateChanged -= OnConnectionStateChanged;
 
         _watchdog?.Dispose();
-        await _channel.DisposeAsync().ConfigureAwait(false);
+        _receiver.Dispose();
+        _dispatcher.Dispose();
+        _sender.Dispose();
+        _diagnostics.Dispose();
+
         await _connection.DisposeAsync().ConfigureAwait(false);
     }
 
-    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+    public void Dispose()
+    {
+        DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
 }
