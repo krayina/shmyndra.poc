@@ -2,7 +2,7 @@
 
 namespace Mavlink;
 
-public sealed class MavlinkUdpPort : IMavlinkPort
+public sealed class MavlinkUdpPort : IMavlinkPort, IAsyncDisposable, IDisposable
 {
     private readonly UdpClient _udp;
     private readonly bool _leaveOpen;
@@ -20,49 +20,68 @@ public sealed class MavlinkUdpPort : IMavlinkPort
 
     public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
     {
-        UdpReceiveResult result;
+        ThrowIfDisposed();
+
+        try
+        {
+            UdpReceiveResult result;
 
 #if NET6_0_OR_GREATER
-        result = await _udp.ReceiveAsync(ct).ConfigureAwait(false);
+            result = await _udp.ReceiveAsync(ct).ConfigureAwait(false);
 #else
-        result = await ReceiveWithCancellationAsync(ct).ConfigureAwait(false);
+            result = await ReceiveWithCancellationAsync(ct).ConfigureAwait(false);
 #endif
 
-        var data = result.Buffer;
+            var data = result.Buffer;
 
-        if (data.Length > buffer.Length)
-        {
-            throw new InvalidOperationException(
-                $"Datagram ({data.Length}B) exceeds buffer ({buffer.Length}B)");
+            if (data.Length > buffer.Length)
+            {
+                throw new InvalidOperationException(
+                    $"Datagram ({data.Length}B) exceeds buffer ({buffer.Length}B)");
+            }
+
+            data.CopyTo(buffer);
+            return data.Length;
         }
+        catch (Exception ex) when (ex is ObjectDisposedException || ex is SocketException)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(ct);
+            }
 
-        data.CopyTo(buffer);
-        return data.Length;
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                throw new ObjectDisposedException(nameof(MavlinkUdpPort), ex);
+            }
+
+            throw new MavlinkConnectionException("Port error during read.", ex);
+        }
     }
 
 #if !NET6_0_OR_GREATER
-    /// <summary>
-    /// On platforms without CancellationToken support, cancelling the read
-    /// closes the underlying socket. The port becomes unusable after cancellation.
-    /// </summary>
     private async Task<UdpReceiveResult> ReceiveWithCancellationAsync(CancellationToken ct)
     {
         var receiveTask = _udp.ReceiveAsync();
 
-        using (ct.Register(() => { try { _udp.Client.Close(); } catch { } }))
+        using (ct.Register(static state =>
+        {
+            try
+            {
+                ((UdpClient)state!).Client.Close();
+            }
+            catch
+            {
+                // Suppress exception during socket close
+            }
+        }, _udp))
         {
             try
             {
                 return await receiveTask.ConfigureAwait(false);
             }
-            catch (ObjectDisposedException) when (ct.IsCancellationRequested)
-            {
-                Volatile.Write(ref _disposed, 1);
-                throw new OperationCanceledException(ct);
-            }
             catch (SocketException) when (ct.IsCancellationRequested)
             {
-                Volatile.Write(ref _disposed, 1);
                 throw new OperationCanceledException(ct);
             }
         }
@@ -71,14 +90,39 @@ public sealed class MavlinkUdpPort : IMavlinkPort
 
     public async ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
+        ThrowIfDisposed();
 
+        try
+        {
 #if NET6_0_OR_GREATER
-        await _udp.SendAsync(data, ct).ConfigureAwait(false);
+            await _udp.SendAsync(data, ct).ConfigureAwait(false);
 #else
-        var array = data.ToArray();
-        await _udp.SendAsync(array, array.Length).ConfigureAwait(false);
+            var array = data.ToArray();
+            await _udp.SendAsync(array, array.Length).ConfigureAwait(false);
 #endif
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException || ex is SocketException)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(ct);
+            }
+
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                throw new ObjectDisposedException(nameof(MavlinkUdpPort), ex);
+            }
+
+            throw new MavlinkConnectionException("Port error during write.", ex);
+        }
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(MavlinkUdpPort));
+        }
     }
 
     public void Dispose()
@@ -90,13 +134,65 @@ public sealed class MavlinkUdpPort : IMavlinkPort
 
         if (!_leaveOpen)
         {
-            _udp.Dispose();
+            try
+            {
+                _udp.Client?.Close();
+            }
+            catch
+            {
+                // Suppress exception during client close
+            }
+
+            try
+            {
+                _udp.Dispose();
+            }
+            catch
+            {
+                // Suppress exception during disposal
+            }
         }
     }
 
     public ValueTask DisposeAsync()
     {
-        Dispose();
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+        {
+            return default;
+        }
+
+        if (!_leaveOpen)
+        {
+#if NET6_0_OR_GREATER
+            try
+            {
+                _udp.Dispose();
+            }
+            catch
+            {
+                // Suppress exception during disposal
+            }
+#else
+            try
+            {
+                _udp.Client?.Close();
+            }
+            catch
+            {
+                // Suppress exception during client close
+            }
+
+            try
+            {
+                _udp.Dispose();
+            }
+            catch
+            {
+                // Suppress exception during disposal
+            }
+#endif
+        }
+
         return default;
     }
 }

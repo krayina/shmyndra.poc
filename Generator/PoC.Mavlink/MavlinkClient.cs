@@ -2,7 +2,7 @@
 
 namespace Mavlink;
 
-public sealed class MavlinkClient : IAsyncDisposable, IDisposable
+public sealed class MavlinkClient : IDisposable, IAsyncDisposable
 {
     private readonly IMavlinkConnection _connection;
     private readonly IMavlinkDialect _dialect;
@@ -156,7 +156,12 @@ public sealed class MavlinkClient : IAsyncDisposable, IDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
+    /// <summary>
+    /// Synchronously disposes the client. 
+    /// NOTE: This method initiates cancellation but does NOT wait for background network tasks to complete. 
+    /// For guaranteed cleanup and to avoid potential deadlocks, use <see cref="DisposeAsync"/>.
+    /// </summary>
+    public void Dispose()
     {
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
         {
@@ -166,16 +171,36 @@ public sealed class MavlinkClient : IAsyncDisposable, IDisposable
         _connection.StateChanged -= OnConnectionStateChanged;
 
         _watchdog?.Dispose();
+        _sender.Dispose();
+
+        if (_connection is IDisposable disposableConnection)
+        {
+            disposableConnection.Dispose();
+        }
+
         _receiver.Dispose();
         _dispatcher.Dispose();
-        _sender.Dispose();
         _diagnostics.Dispose();
-
-        await _connection.DisposeAsync().ConfigureAwait(false);
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        DisposeAsync().AsTask().GetAwaiter().GetResult();
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _connection.StateChanged -= OnConnectionStateChanged;
+
+        if (_watchdog is not null)
+        {
+            await _watchdog.DisposeAsync().ConfigureAwait(false);
+        }
+        await _sender.DisposeAsync().ConfigureAwait(false);
+        await _connection.DisposeAsync().ConfigureAwait(false);
+        await _receiver.DisposeAsync().ConfigureAwait(false);
+        await _dispatcher.DisposeAsync().ConfigureAwait(false);
+
+        _diagnostics.Dispose();
     }
 }

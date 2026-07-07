@@ -2,11 +2,12 @@
 
 namespace Mavlink;
 
-internal sealed class MavlinkDispatcher : IDisposable
+internal sealed class MavlinkDispatcher : IDisposable, IAsyncDisposable
 {
     private readonly MavlinkEventBus _eventBus;
     private readonly Channel<MavlinkReceivedPacket> _channel;
     private Task? _loopTask;
+    private int _disposed;
 
     public MavlinkDispatcher(MavlinkEventBus eventBus, int channelCapacity = 256)
     {
@@ -40,26 +41,52 @@ internal sealed class MavlinkDispatcher : IDisposable
         _channel.Writer.TryComplete();
     }
 
-    public async Task DrainAsync()
-    {
-        if (_loopTask != null)
-        {
-            await _loopTask.ConfigureAwait(false);
-        }
-    }
-
     private async Task DispatchLoopAsync()
     {
-        await foreach (var packet in _channel.Reader
-                           .ReadAllAsync()
-                           .ConfigureAwait(false))
+        try
         {
-            _eventBus.Publish(in packet);
+            await foreach (var packet in _channel.Reader
+                               .ReadAllAsync()
+                               .ConfigureAwait(false))
+            {
+                _eventBus.Publish(in packet);
+            }
+        }
+        catch
+        {
+            // Suppress exceptions during dispatch loop
         }
     }
 
     public void Dispose()
     {
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+        {
+            return;
+        }
+
         Complete();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+        {
+            return;
+        }
+
+        Complete();
+
+        if (_loopTask != null)
+        {
+            try
+            {
+                await _loopTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Suppress exceptions when awaiting the loop task
+            }
+        }
     }
 }

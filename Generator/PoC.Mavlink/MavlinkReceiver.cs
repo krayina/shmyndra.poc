@@ -4,7 +4,7 @@ using System.Runtime.CompilerServices;
 
 namespace Mavlink;
 
-internal sealed class MavlinkReceiver : IDisposable
+internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
 {
     private readonly System.IO.Pipelines.PipeReader _input;
     private readonly IMavlinkDialect _dialect;
@@ -12,7 +12,7 @@ internal sealed class MavlinkReceiver : IDisposable
     private readonly IMavlinkParserErrorListener _errorListener;
     private readonly CancellationTokenSource _cts = new();
     private Task? _task;
-
+    private int _disposed;
 #if !NETSTANDARD2_1_OR_GREATER
     private readonly MavlinkFrameReader _framer = new();
 #endif
@@ -46,26 +46,24 @@ internal sealed class MavlinkReceiver : IDisposable
             while (!ct.IsCancellationRequested)
             {
                 var result = await _input.ReadAsync(ct).ConfigureAwait(false);
-                var buffer = result.Buffer;
+                if (result.IsCanceled)
+                {
+                    break;
+                }
 
+                var buffer = result.Buffer;
                 if (buffer.IsEmpty && result.IsCompleted)
                 {
                     break;
                 }
 
                 SequencePosition consumed;
-
-#if NETSTANDARD2_1_OR_GREATER                
+#if NETSTANDARD2_1_OR_GREATER                                
                 consumed = EnqueueFramesFromSequence(buffer);
 #else
                 consumed = EnqueueFramesFallback(buffer);
 #endif
                 _input.AdvanceTo(consumed, buffer.End);
-
-                if (result.IsCompleted)
-                {
-                    break;
-                }
             }
         }
         catch (OperationCanceledException)
@@ -74,18 +72,14 @@ internal sealed class MavlinkReceiver : IDisposable
         }
         catch (Exception)
         {
-            // If a fatal error occurs within the reading pipeline itself,
-            // we forward it to the system via OnParserError or a separate critical error callback.
-            _errorListener.OnParserError(MavlinkDeserializeResult.UnknownMagicByte);
-        }
-        finally
-        {
-            // CRITICAL: _input.CompleteAsync() is no longer called here!
-            // The lifecycle of the PipeReader is managed exclusively by MavlinkConnection.
+            if (Volatile.Read(ref _disposed) == 0 && !ct.IsCancellationRequested)
+            {
+                _errorListener.OnParserError(MavlinkDeserializeResult.UnknownMagicByte);
+            }
         }
     }
 
-#if NETSTANDARD2_1_OR_GREATER    
+#if NETSTANDARD2_1_OR_GREATER        
     private SequencePosition EnqueueFramesFromSequence(ReadOnlySequence<byte> sequence)
     {
         var reader = new SequenceReader<byte>(sequence);
@@ -167,7 +161,7 @@ internal sealed class MavlinkReceiver : IDisposable
         int totalLength = (int)sequence.Length;
         var pool = ArrayPool<byte>.Shared;
         byte[] array = pool.Rent(totalLength);
-        
+
         try
         {
             sequence.CopyTo(array);
@@ -200,7 +194,73 @@ internal sealed class MavlinkReceiver : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+        {
+            return;
+        }
+
         _cts.Cancel();
+
+        try
+        {
+            _input.CancelPendingRead();
+        }
+        catch
+        {
+            // Suppress exceptions during pending read cancellation
+        }
+
+        try
+        {
+            _input.Complete();
+        }
+        catch
+        {
+            // Suppress completion exceptions
+        }
+
+        _cts.Dispose();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _cts.Cancel();
+
+        try
+        {
+            _input.CancelPendingRead();
+        }
+        catch
+        {
+            // Suppress exceptions during pending read cancellation
+        }
+
+        if (_task != null)
+        {
+            try
+            {
+                await _task.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Suppress exceptions from the running task
+            }
+        }
+
+        try
+        {
+            _input.Complete();
+        }
+        catch
+        {
+            // Suppress completion exceptions
+        }
+
         _cts.Dispose();
     }
 }

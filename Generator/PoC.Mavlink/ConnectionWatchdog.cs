@@ -1,6 +1,6 @@
 ﻿namespace Mavlink;
 
-internal sealed class ConnectionWatchdog : IDisposable
+internal sealed class ConnectionWatchdog : IDisposable, IAsyncDisposable
 {
     private readonly TimeSpan _timeout;
     private readonly Func<Task> _onTimeout;
@@ -55,9 +55,6 @@ internal sealed class ConnectionWatchdog : IDisposable
         {
             ctsToCancel = _cts;
             _cts = null;
-
-            // Reset the task to allow future restarts
-            _task = null;
         }
 
         if (ctsToCancel != null)
@@ -72,6 +69,52 @@ internal sealed class ConnectionWatchdog : IDisposable
             }
 
             ctsToCancel.Dispose();
+        }
+    }
+
+    public async Task StopAsync()
+    {
+        CancellationTokenSource? ctsToCancel;
+        Task? taskToAwait;
+
+        lock (_gate)
+        {
+            ctsToCancel = _cts;
+            taskToAwait = _task;
+            _cts = null;
+        }
+
+        if (ctsToCancel != null)
+        {
+            try
+            {
+                ctsToCancel.Cancel();
+            }
+            catch
+            {
+                // Suppress exceptions during cancellation
+            }
+
+            if (taskToAwait != null)
+            {
+                try
+                {
+                    await taskToAwait.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Suppress exceptions from the running task
+                }
+            }
+
+            try
+            {
+                ctsToCancel.Dispose();
+            }
+            catch
+            {
+                // Suppress exceptions during disposal
+            }
         }
     }
 
@@ -124,5 +167,20 @@ internal sealed class ConnectionWatchdog : IDisposable
         }
 
         Stop();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+        }
+
+        await StopAsync().ConfigureAwait(false);
     }
 }

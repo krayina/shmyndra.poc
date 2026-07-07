@@ -1,6 +1,8 @@
-﻿namespace Mavlink;
+﻿using System.Net.Sockets;
 
-internal sealed class MavlinkConnection : IMavlinkConnection
+namespace Mavlink;
+
+internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyncDisposable
 {
     private readonly IMavlinkPortProvider _provider;
     private readonly IReconnectPolicy _policy;
@@ -304,7 +306,18 @@ internal sealed class MavlinkConnection : IMavlinkConnection
                         throw new MavlinkConnectionException("Connection lost while waiting to write.");
                     }
 
-                    await port.WriteAsync(data, ct).ConfigureAwait(false);
+                    try
+                    {
+                        await port.WriteAsync(data, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException or SocketException)
+                    {
+                        if (ct.IsCancellationRequested)
+                        {
+                            throw new OperationCanceledException(ct);
+                        }
+                        throw new MavlinkConnectionException("Port error during write.", ex);
+                    }
                 }
                 finally
                 {
@@ -349,24 +362,38 @@ internal sealed class MavlinkConnection : IMavlinkConnection
 #if NETSTANDARD2_1_OR_GREATER
         if (port.Reader is { } src)
         {
-            while (!ct.IsCancellationRequested)
+            try
             {
-                var res = await src.ReadAsync(ct).ConfigureAwait(false);
-                var buf = res.Buffer;
-
-                foreach (var seg in buf)
+                while (!ct.IsCancellationRequested)
                 {
-                    var mem = writer.GetMemory(seg.Length);
-                    seg.Span.CopyTo(mem.Span);
-                    writer.Advance(seg.Length);
+                    var res = await src.ReadAsync(ct).ConfigureAwait(false);
+                    var buf = res.Buffer;
+
+                    foreach (var seg in buf)
+                    {
+                        var mem = writer.GetMemory(seg.Length);
+                        seg.Span.CopyTo(mem.Span);
+                        writer.Advance(seg.Length);
+                    }
+
+                    src.AdvanceTo(buf.End);
+                    var flush = await writer.FlushAsync(ct).ConfigureAwait(false);
+
+                    if (flush.IsCompleted || res.IsCompleted)
+                    {
+                        break;
+                    }
                 }
-
-                src.AdvanceTo(buf.End);
-                var flush = await writer.FlushAsync(ct).ConfigureAwait(false);
-
-                if (flush.IsCompleted || res.IsCompleted)
+            }
+            finally
+            {
+                try
                 {
-                    break;
+                    await writer.CompleteAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Suppress exceptions during writer completion
                 }
             }
             return;
@@ -400,6 +427,15 @@ internal sealed class MavlinkConnection : IMavlinkConnection
         finally
         {
             pool.Return(bufArray);
+
+            try
+            {
+                await writer.CompleteAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Suppress exceptions during writer completion
+            }
         }
     }
 
@@ -488,6 +524,41 @@ internal sealed class MavlinkConnection : IMavlinkConnection
         }
     }
 
+    public void Dispose()
+    {
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            _life?.Cancel();
+        }
+        catch
+        {
+            // Suppress cancellation exceptions
+        }
+
+        var port = _port;
+        _port = null;
+        port?.Dispose();
+
+        _pipe.Writer.Complete();
+
+        _connectGate.Dispose();
+        _writeGate.Dispose();
+
+        try
+        {
+            _life?.Dispose();
+        }
+        catch
+        {
+            // Suppress disposal exceptions
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
@@ -495,13 +566,25 @@ internal sealed class MavlinkConnection : IMavlinkConnection
             return;
         }
 
-        await DisconnectAsync().ConfigureAwait(false);
-        await _pipe.Writer.CompleteAsync().ConfigureAwait(false);
+        try
+        {
+            await DisconnectAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Suppress disconnection exceptions
+        }
 
-        _pipe.Reader.Complete();
+        try
+        {
+            await _pipe.Writer.CompleteAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Suppress writer completion exceptions
+        }
+
         _connectGate.Dispose();
         _writeGate.Dispose();
     }
-
-    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 }
