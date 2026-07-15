@@ -14,6 +14,8 @@ public sealed class MavlinkChannelOptions
 
     public TimeSpan? LinkTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
+    public TimeSpan? SystemTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
     public MavlinkSigner? Signer { get; set; }
 
     public int DispatchChannelCapacity { get; set; } = 256;

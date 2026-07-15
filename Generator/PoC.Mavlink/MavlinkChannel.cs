@@ -1,4 +1,5 @@
 ﻿using Mavlink.Dialects;
+using Mavlink.Routing;
 
 namespace Mavlink;
 
@@ -11,6 +12,7 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
     private readonly MavlinkEventBus _eventBus;
     private readonly MavlinkDiagnostics _diagnostics;
     private readonly ConnectionWatchdog? _watchdog;
+    private readonly MavlinkNodeRegistry? _registry;
     private readonly MavlinkSigner? _signer;
     private readonly bool _canWrite;
     private readonly bool _receiveEnabled;
@@ -27,6 +29,7 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
         MavlinkEventBus eventBus,
         MavlinkDiagnostics diagnostics,
         ConnectionWatchdog? watchdog,
+        MavlinkNodeRegistry? registry,
         MavlinkSigner? signer,
         bool canWrite,
         bool receiveEnabled)
@@ -38,6 +41,7 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
         _eventBus = eventBus;
         _diagnostics = diagnostics;
         _watchdog = watchdog;
+        _registry = registry;
         _signer = signer;
         _canWrite = canWrite;
         _receiveEnabled = receiveEnabled;
@@ -66,6 +70,7 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
         MavlinkReceiver? receiver = null;
         MavlinkDispatcher? dispatcher = null;
         ConnectionWatchdog? watchdog = null;
+        MavlinkNodeRegistry? registry = null;
 
         var eventBus = new MavlinkEventBus(options.Dialect);
         var diagnostics = new MavlinkDiagnostics();
@@ -84,8 +89,13 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
                 onActivity = watchdog.NotifyActivity;
             }
 
+            if (options.SystemTimeout.HasValue)
+            {
+                registry = new MavlinkNodeRegistry(eventBus, options.SystemTimeout.Value);
+            }
+
             dispatcher = new MavlinkDispatcher(eventBus, options.DispatchChannelCapacity);
-            var stage = new PacketProcessingStage(dispatcher, diagnostics, onActivity);
+            var stage = new PacketProcessingStage(dispatcher, diagnostics, registry, onActivity);
             receiver = new MavlinkReceiver(connection.Input, options.Dialect, stage, stage);
         }
 
@@ -97,6 +107,7 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
             eventBus,
             diagnostics,
             watchdog,
+            registry,
             options.Signer,
             canWrite: provider.CanWrite,
             receiveEnabled: options.EnableReceive);
@@ -114,6 +125,39 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
         remove => _connection.StateChanged -= value;
     }
 
+    public event Action<MavlinkSystemView>? SystemDiscovered
+    {
+        add
+        {
+            var reg = _registry ?? ThrowNoRegistry();
+            reg.SystemDiscovered += value;
+        }
+        remove
+        {
+            if (_registry != null)
+            {
+                _registry.SystemDiscovered -= value;
+            }
+        }
+    }
+
+    public MavlinkSystemView GetSystem(byte systemId)
+    {
+        ThrowIfDisposed();
+        var reg = _registry ?? ThrowNoRegistry();
+        return reg.GetSystem(systemId);
+    }
+
+    public IReadOnlyCollection<MavlinkSystemView> Systems
+        => _registry?.Systems ?? Array.Empty<MavlinkSystemView>();
+
+    private MavlinkNodeRegistry ThrowNoRegistry()
+    {
+        throw new InvalidOperationException(_receiveEnabled
+            ? "Per-system tracking is disabled: MavlinkChannelOptions.SystemTimeout is null."
+            : "Per-system tracking requires receive: MavlinkChannelOptions.EnableReceive is false.");
+    }
+
     public Task ConnectAsync(CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -126,11 +170,6 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
         return _connection.DisconnectAsync(ct);
     }
 
-    /// <summary>
-    /// Creates a lightweight client bound to this channel with the given local
-    /// identity. The client keeps its own MAVLink sequence counter, so several
-    /// local components on one link each produce a correct per-sender sequence.
-    /// </summary>
     public MavlinkClient CreateClient(
         byte systemId,
         byte componentId,
@@ -140,7 +179,6 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
         return new MavlinkClient(this, systemId, componentId, defaultSendVersion, ownsChannel: false);
     }
 
-    /// <summary>Link-wide subscription: packets from every system on this link.</summary>
     public IDisposable Subscribe<T>(
         Action<T, MavlinkReceivedPacket> callback,
         Func<MavlinkReceivedPacket, bool>? filter = null)
@@ -160,11 +198,6 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
         return _eventBus.SubscribeAll(callback, filter);
     }
 
-    /// <summary>
-    /// Low-level frame path shared by all clients of this link.
-    /// Identity (seq/sysId/compId) is supplied by the caller: the channel
-    /// itself has no identity.
-    /// </summary>
 #if NET6_0_OR_GREATER
     [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder))]
 #endif
@@ -200,7 +233,6 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
         }
     }
 
-    /// <summary>Non-generic twin for boxed <see cref="IMavlinkMessage"/> flows.</summary>
 #if NET6_0_OR_GREATER
     [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder))]
 #endif
@@ -280,7 +312,6 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
 
     public void Dispose()
     {
-        // Fire-and-forget bridge; DisposeAsync is the honest path.
         if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
         {
             return;
@@ -290,6 +321,7 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
         _watchdog?.Dispose();
         _connection.Dispose();
         _receiver?.Dispose();
+        _registry?.Dispose();
         _dispatcher?.Dispose();
         _sendGate.Dispose();
     }
@@ -313,6 +345,11 @@ public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
         if (_receiver != null)
         {
             await _receiver.DisposeAsync().ConfigureAwait(false);
+        }
+
+        if (_registry != null)
+        {
+            await _registry.DisposeAsync().ConfigureAwait(false);
         }
 
         if (_dispatcher != null)
