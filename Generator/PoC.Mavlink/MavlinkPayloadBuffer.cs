@@ -1,10 +1,12 @@
-﻿namespace Mavlink;
+﻿using System.Runtime.CompilerServices;
+
+namespace Mavlink;
 
 #if NET8_0_OR_GREATER
-[System.Runtime.CompilerServices.InlineArray(255)]
+[InlineArray(255)]
 internal struct MavlinkPayloadBuffer
 {
-    private byte _element0;
+    internal byte Element0;
 }
 #else
 internal unsafe struct MavlinkPayloadBuffer
