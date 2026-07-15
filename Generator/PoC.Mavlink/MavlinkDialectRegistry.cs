@@ -9,9 +9,7 @@ public static class MavlinkDialectRegistry
     private static IMavlinkDialect[] _cachedArray = Array.Empty<IMavlinkDialect>();
     private static readonly object _lock = new object();
 
-#if NETSTANDARD2_1_OR_GREATER
     [EditorBrowsable(EditorBrowsableState.Never)]
-#endif
     public static void Register(IMavlinkDialect dialect)
     {
         if (dialect == null)
