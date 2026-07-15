@@ -19,12 +19,14 @@ public sealed class CommonDialect : IMavlinkDialect
     public IMavlinkMessageInfo? GetInfo(uint msgId) => msgId switch
     {
         0 => HeartbeatMessageInfo.Instance,
+        76 => CommandLongMessageInfo.Instance,
         _ => null
     };
 
     public IMavlinkMessageInfo? GetInfo(Type type)
     {
         if (type == typeof(HeartbeatMavlinkMessage)) return HeartbeatMessageInfo.Instance;
+        if (type == typeof(CommandLongMavlinkMessage)) return CommandLongMessageInfo.Instance;
         return null;
     }
 }

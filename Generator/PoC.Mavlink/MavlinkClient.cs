@@ -1,4 +1,5 @@
 ﻿using Mavlink.Dialects;
+using Mavlink.Routing;
 using System.Net.Sockets;
 
 namespace Mavlink;
@@ -66,8 +67,8 @@ public sealed class MavlinkClient : IDisposable, IAsyncDisposable
     }
 
     public ValueTask SendAsync<T>(T message, CancellationToken ct = default)
-        where T : struct, IMavlinkMessage
-        => SendAsync(message, version: null, ct);
+       where T : struct, IMavlinkMessage
+       => SendAsync(message, version: null, ct);
 
     public ValueTask SendAsync<T>(
         T message,
@@ -104,10 +105,109 @@ public sealed class MavlinkClient : IDisposable, IAsyncDisposable
     }
 
     private MavlinkPacketVersion ResolveVersion(MavlinkPacketVersion? explicitVersion)
+        => ResolveVersion(explicitVersion, target: null);
+
+    private MavlinkPacketVersion ResolveVersion(
+        MavlinkPacketVersion? explicitVersion,
+        MavlinkSystemView? target)
     {
-        return explicitVersion
-            ?? DefaultSendVersion
-            ?? MavlinkPacketVersion.V2;
+        if (explicitVersion.HasValue)
+        {
+            return explicitVersion.Value;
+        }
+
+        if (DefaultSendVersion.HasValue)
+        {
+            return DefaultSendVersion.Value;
+        }
+
+        if (target != null && target.SessionVersion == MavlinkSessionVersion.V1)
+        {
+            return MavlinkPacketVersion.V1;
+        }
+        return MavlinkPacketVersion.V2;
+    }
+
+    public ValueTask SendToAsync<T>(
+        T message,
+        Mavlink.Routing.MavlinkSystemView target,
+        MavlinkPacketVersion? version = null,
+        CancellationToken ct = default)
+        where T : struct, IMavlinkTargetedMessage
+    {
+        if (target is null)
+        {
+            throw new ArgumentNullException(nameof(target));
+        }
+
+        return SendToCoreAsync(
+            message, target.SystemId, targetComponent: 0,
+            ResolveVersion(version, target), ct);
+    }
+
+    public ValueTask SendToAsync<T>(
+        T message,
+        Mavlink.Routing.MavlinkComponentView target,
+        MavlinkPacketVersion? version = null,
+        CancellationToken ct = default)
+        where T : struct, IMavlinkTargetedMessage
+    {
+        if (target is null)
+        {
+            throw new ArgumentNullException(nameof(target));
+        }
+
+        var system = _channel.GetSystem(target.SystemId);
+
+        return SendToCoreAsync(
+            message, target.SystemId, target.ComponentId,
+            ResolveVersion(version, system), ct);
+    }
+
+    private ValueTask SendToCoreAsync<T>(
+        T message,
+        byte targetSystem,
+        byte targetComponent,
+        MavlinkPacketVersion version,
+        CancellationToken ct)
+        where T : struct, IMavlinkTargetedMessage
+    {
+        ThrowIfDisposed();
+
+        var info = _channel.Dialect.GetInfo(typeof(T))
+            ?? throw new ArgumentException($"{typeof(T).Name} not registered in dialect.");
+
+        if (info is not IMavlinkTargetedMessageInfo<T> targeted)
+        {
+            throw new InvalidOperationException(
+                $"Dialect metadata for {typeof(T).Name} does not implement " +
+                $"IMavlinkTargetedMessageInfo<{typeof(T).Name}>. Regenerate the dialect.");
+        }
+
+        var stamped = targeted.WithTarget(in message, targetSystem, targetComponent);
+
+        return _channel.SendFrameAsync(
+            stamped, info, NextSequence(), SystemId, ComponentId, version, ct);
+    }
+
+    public MavlinkPeer To(Mavlink.Routing.MavlinkSystemView target)
+    {
+        if (target is null)
+        {
+            throw new ArgumentNullException(nameof(target));
+        }
+
+        return new MavlinkPeer(this, target, component: null);
+    }
+
+    public MavlinkPeer To(Mavlink.Routing.MavlinkComponentView target)
+    {
+        if (target is null)
+        {
+            throw new ArgumentNullException(nameof(target));
+        }
+
+        return new MavlinkPeer(this, _channel.GetSystem(target.SystemId), target);
     }
 
     private byte NextSequence()
