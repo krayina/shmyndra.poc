@@ -6,6 +6,7 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
 {
     private readonly IMavlinkPortProvider _provider;
     private readonly IReconnectPolicy _policy;
+    private readonly bool _pumpToPipe;
     private readonly System.IO.Pipelines.Pipe _pipe;
 
     private readonly SemaphoreSlim _connectGate = new(1, 1);
@@ -20,10 +21,11 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
     private MavlinkConnectionState _state = MavlinkConnectionState.Disconnected;
     private int _disposed;
 
-    public MavlinkConnection(IMavlinkPortProvider provider, IReconnectPolicy policy)
+    public MavlinkConnection(IMavlinkPortProvider provider, IReconnectPolicy policy, bool pumpToPipe = true)
     {
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
         _policy = policy ?? throw new ArgumentNullException(nameof(policy));
+        _pumpToPipe = pumpToPipe;
         _pipe = new System.IO.Pipelines.Pipe(System.IO.Pipelines.PipeOptions.Default);
     }
 
@@ -357,6 +359,12 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
     private async Task PumpAsync(CancellationToken ct)
     {
         var port = _port ?? throw new InvalidOperationException("Port is null.");
+        if (!_pumpToPipe)
+        {
+            await DrainAndDiscardAsync(port, ct).ConfigureAwait(false);
+            return;
+        }
+
         var writer = _pipe.Writer;
 
 #if NETSTANDARD2_1_OR_GREATER
@@ -436,6 +444,27 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
             {
                 // Suppress exceptions during writer completion
             }
+        }
+    }
+
+    private static async Task DrainAndDiscardAsync(IMavlinkPort port, CancellationToken ct)
+    {
+        var pool = System.Buffers.ArrayPool<byte>.Shared;
+        var buf = pool.Rent(4096);
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                int n = await port.ReadAsync(buf.AsMemory(0, buf.Length), ct).ConfigureAwait(false);
+                if (n == 0)
+                {
+                    break; // EOF → lifecycle loop: reconnect or ConnectionLost
+                }
+            }
+        }
+        finally
+        {
+            pool.Return(buf);
         }
     }
 

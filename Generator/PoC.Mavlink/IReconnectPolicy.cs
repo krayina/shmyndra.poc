@@ -11,6 +11,8 @@ public sealed class NoReconnectPolicy : IReconnectPolicy
 {
     public static readonly NoReconnectPolicy Instance = new();
 
+    private NoReconnectPolicy() { }
+
     public bool RetryInitialConnect => false;
 
     public TimeSpan? GetDelay(int attempt, Exception? lastError) => null;
@@ -22,10 +24,14 @@ public sealed class FixedReconnectPolicy : IReconnectPolicy
     private readonly TimeSpan _delay;
     private readonly int? _maxAttempts;
 
-    public bool RetryInitialConnect => false;
+    public FixedReconnectPolicy(TimeSpan delay, int? maxAttempts = null, bool retryInitialConnect = false)
+    {
+        _delay = delay;
+        _maxAttempts = maxAttempts;
+        RetryInitialConnect = retryInitialConnect;
+    }
 
-    public FixedReconnectPolicy(TimeSpan delay, int? maxAttempts = null)
-        => (_delay, _maxAttempts) = (delay, maxAttempts);
+    public bool RetryInitialConnect { get; }
 
     public TimeSpan? GetDelay(int attempt, Exception? lastError)
         => _maxAttempts is { } max && attempt > max ? null : _delay;
@@ -37,15 +43,19 @@ public sealed class ExponentialBackoffPolicy : IReconnectPolicy
     private readonly TimeSpan _initial, _max;
     private readonly double _factor;
 
-    public bool RetryInitialConnect => false;
-
     public ExponentialBackoffPolicy(
-        TimeSpan? initial = null, TimeSpan? max = null, double factor = 2.0)
+        TimeSpan? initial = null,
+        TimeSpan? max = null,
+        double factor = 2.0,
+        bool retryInitialConnect = false)
     {
         _initial = initial ?? TimeSpan.FromMilliseconds(500);
         _max = max ?? TimeSpan.FromSeconds(30);
         _factor = factor;
+        RetryInitialConnect = retryInitialConnect;
     }
+
+    public bool RetryInitialConnect { get; }
 
     public TimeSpan? GetDelay(int attempt, Exception? lastError)
     {
