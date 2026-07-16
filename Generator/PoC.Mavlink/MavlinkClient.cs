@@ -130,7 +130,7 @@ public sealed class MavlinkClient : IDisposable, IAsyncDisposable
 
     public ValueTask SendToAsync<T>(
         T message,
-        Mavlink.Routing.MavlinkSystemView target,
+        MavlinkSystemView target,
         MavlinkPacketVersion? version = null,
         CancellationToken ct = default)
         where T : struct, IMavlinkTargetedMessage
@@ -147,7 +147,7 @@ public sealed class MavlinkClient : IDisposable, IAsyncDisposable
 
     public ValueTask SendToAsync<T>(
         T message,
-        Mavlink.Routing.MavlinkComponentView target,
+        MavlinkComponentView target,
         MavlinkPacketVersion? version = null,
         CancellationToken ct = default)
         where T : struct, IMavlinkTargetedMessage
@@ -190,7 +190,7 @@ public sealed class MavlinkClient : IDisposable, IAsyncDisposable
             stamped, info, NextSequence(), SystemId, ComponentId, version, ct);
     }
 
-    public MavlinkPeer To(Mavlink.Routing.MavlinkSystemView target)
+    public MavlinkPeer To(MavlinkSystemView target)
     {
         if (target is null)
         {
@@ -200,7 +200,7 @@ public sealed class MavlinkClient : IDisposable, IAsyncDisposable
         return new MavlinkPeer(this, target, component: null);
     }
 
-    public MavlinkPeer To(Mavlink.Routing.MavlinkComponentView target)
+    public MavlinkPeer To(MavlinkComponentView target)
     {
         if (target is null)
         {
