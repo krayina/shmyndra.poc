@@ -7,7 +7,7 @@ public sealed class CommonDialect : IMavlinkDialect
 {
 #if NET5_0_OR_GREATER
     [System.Runtime.CompilerServices.ModuleInitializer]
-    internal static void Initialize() => MavlinkDialectRegistry.Register(Instance);
+    internal static void Register() => Infrastructure.MavlinkDialectRegistry.Register(Instance);
 #endif
 
     public static readonly CommonDialect Instance = new CommonDialect();

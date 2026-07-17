@@ -1,7 +1,6 @@
-﻿using Mavlink.Dialects;
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 
-namespace Mavlink;
+namespace Mavlink.Dialects;
 
 internal sealed class MavlinkDialectCompositor : IMavlinkDialect
 {

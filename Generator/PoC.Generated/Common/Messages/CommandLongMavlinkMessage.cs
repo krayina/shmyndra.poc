@@ -1,5 +1,6 @@
 ﻿namespace Mavlink.Common;
 
+//[MavlinkGenerated(dialect: "common", xmlHash: "a1b2c3...")]
 public readonly record struct CommandLongMavlinkMessage : IMavlinkTargetedMessage
 {
     public float Param1 { get; init; }
