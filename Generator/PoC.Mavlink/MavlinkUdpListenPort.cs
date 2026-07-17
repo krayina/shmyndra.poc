@@ -1,31 +1,33 @@
-﻿using System.Net.Sockets;
+﻿using System.Net;
+using System.Net.Sockets;
 
-namespace Mavlink;
+namespace Mavlink.Transport;
 
-public sealed class MavlinkUdpPort : IMavlinkPort, IAsyncDisposable, IDisposable
+/// <summary>
+/// UDP port in listen (server) mode: bound to a local port, replies to the
+/// most recent remote sender. Until a peer is discovered, outgoing frames
+/// are silently dropped (there is nowhere to send them yet) — this matches
+/// the behavior of most GCS implementations.
+/// </summary>
+public sealed class MavlinkUdpListenPort : IMavlinkPort
 {
     private readonly UdpClient _udp;
-    private readonly bool _leaveOpen;
+    private volatile IPEndPoint? _remote;
     private int _disposed;
 
 #if NETSTANDARD2_1_OR_GREATER
-    public System.IO.Pipelines.PipeReader? Reader => null;
+        public System.IO.Pipelines.PipeReader? Reader => null;
 #endif
 
-    public MavlinkUdpPort(UdpClient udp, bool leaveOpen = false)
+    public MavlinkUdpListenPort(UdpClient udp)
     {
         _udp = udp ?? throw new ArgumentNullException(nameof(udp));
-
-        if (udp.Client is { Connected: false })
-        {
-            throw new ArgumentException(
-                "UdpClient must be connected (call udp.Connect(host, port) first). " +
-                "For a bound listen socket use MavlinkUdpListenPort instead.",
-            nameof(udp));
-        }
-
-        _leaveOpen = leaveOpen;
     }
+
+    /// <summary>
+    /// The last remote peer a datagram was received from, if any.
+    /// </summary>
+    public IPEndPoint? RemoteEndPoint => _remote;
 
     public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
     {
@@ -41,8 +43,9 @@ public sealed class MavlinkUdpPort : IMavlinkPort, IAsyncDisposable, IDisposable
             result = await ReceiveWithCancellationAsync(ct).ConfigureAwait(false);
 #endif
 
-            var data = result.Buffer;
+            _remote = result.RemoteEndPoint;
 
+            var data = result.Buffer;
             if (data.Length > buffer.Length)
             {
                 throw new InvalidOperationException(
@@ -61,7 +64,7 @@ public sealed class MavlinkUdpPort : IMavlinkPort, IAsyncDisposable, IDisposable
 
             if (Volatile.Read(ref _disposed) != 0)
             {
-                throw new ObjectDisposedException(nameof(MavlinkUdpPort), ex);
+                throw new ObjectDisposedException(nameof(MavlinkUdpListenPort), ex);
             }
 
             throw new MavlinkConnectionException("Port error during read.", ex);
@@ -72,7 +75,7 @@ public sealed class MavlinkUdpPort : IMavlinkPort, IAsyncDisposable, IDisposable
     private async Task<UdpReceiveResult> ReceiveWithCancellationAsync(CancellationToken ct)
     {
         var receiveTask = _udp.ReceiveAsync();
-
+ 
         using (ct.Register(static state =>
         {
             try
@@ -101,13 +104,20 @@ public sealed class MavlinkUdpPort : IMavlinkPort, IAsyncDisposable, IDisposable
     {
         ThrowIfDisposed();
 
+        var remote = _remote;
+        if (remote is null)
+        {
+            // No peer discovered yet — drop. See class remarks.
+            return;
+        }
+
         try
         {
 #if NET6_0_OR_GREATER
-            await _udp.SendAsync(data, ct).ConfigureAwait(false);
+            await _udp.SendAsync(data, remote, ct).ConfigureAwait(false);
 #else
             var array = data.ToArray();
-            await _udp.SendAsync(array, array.Length).ConfigureAwait(false);
+            await _udp.SendAsync(array, array.Length, remote).ConfigureAwait(false);
 #endif
         }
         catch (Exception ex) when (ex is ObjectDisposedException || ex is SocketException)
@@ -119,7 +129,7 @@ public sealed class MavlinkUdpPort : IMavlinkPort, IAsyncDisposable, IDisposable
 
             if (Volatile.Read(ref _disposed) != 0)
             {
-                throw new ObjectDisposedException(nameof(MavlinkUdpPort), ex);
+                throw new ObjectDisposedException(nameof(MavlinkUdpListenPort), ex);
             }
 
             throw new MavlinkConnectionException("Port error during write.", ex);
@@ -130,7 +140,7 @@ public sealed class MavlinkUdpPort : IMavlinkPort, IAsyncDisposable, IDisposable
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
-            throw new ObjectDisposedException(nameof(MavlinkUdpPort));
+            throw new ObjectDisposedException(nameof(MavlinkUdpListenPort));
         }
     }
 
@@ -141,67 +151,28 @@ public sealed class MavlinkUdpPort : IMavlinkPort, IAsyncDisposable, IDisposable
             return;
         }
 
-        if (!_leaveOpen)
+        try
         {
-            try
-            {
-                _udp.Client?.Close();
-            }
-            catch
-            {
-                // Suppress exception during client close
-            }
+            _udp.Client?.Close();
+        }
+        catch
+        {
+            // Suppress exception during client close
+        }
 
-            try
-            {
-                _udp.Dispose();
-            }
-            catch
-            {
-                // Suppress exception during disposal
-            }
+        try
+        {
+            _udp.Dispose();
+        }
+        catch
+        {
+            // Suppress exception during disposal
         }
     }
 
     public ValueTask DisposeAsync()
     {
-        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
-        {
-            return default;
-        }
-
-        if (!_leaveOpen)
-        {
-#if NET6_0_OR_GREATER
-            try
-            {
-                _udp.Dispose();
-            }
-            catch
-            {
-                // Suppress exception during disposal
-            }
-#else
-            try
-            {
-                _udp.Client?.Close();
-            }
-            catch
-            {
-                // Suppress exception during client close
-            }
-
-            try
-            {
-                _udp.Dispose();
-            }
-            catch
-            {
-                // Suppress exception during disposal
-            }
-#endif
-        }
-
+        Dispose();
         return default;
     }
 }

@@ -312,7 +312,7 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
                     {
                         await port.WriteAsync(data, ct).ConfigureAwait(false);
                     }
-                    catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException or SocketException)
+                    catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException or SocketException or IOException)
                     {
                         if (ct.IsCancellationRequested)
                         {
@@ -586,6 +586,15 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
         {
             // Suppress disposal exceptions
         }
+
+        try
+        {
+            (_provider as IDisposable)?.Dispose();
+        }
+        catch
+        {
+            // Suppress provider disposal exceptions
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -615,5 +624,22 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
 
         _connectGate.Dispose();
         _writeGate.Dispose();
+
+        try
+        {
+            switch (_provider)
+            {
+                case IAsyncDisposable asyncProvider:
+                    await asyncProvider.DisposeAsync().ConfigureAwait(false);
+                    break;
+                case IDisposable provider:
+                    provider.Dispose();
+                    break;
+            }
+        }
+        catch
+        {
+            // Suppress provider disposal exceptions
+        }
     }
 }

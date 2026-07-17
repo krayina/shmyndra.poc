@@ -3,7 +3,7 @@ using Mavlink.Routing;
 
 namespace Mavlink;
 
-public sealed class MavlinkChannel : IDisposable, IAsyncDisposable
+public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
 {
     private readonly MavlinkConnection _connection;
     private readonly IMavlinkDialect _dialect;

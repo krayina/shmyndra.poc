@@ -4,7 +4,7 @@ using System.Net.Sockets;
 
 namespace Mavlink;
 
-public sealed class MavlinkClient : IDisposable, IAsyncDisposable
+public sealed partial class MavlinkClient : IDisposable, IAsyncDisposable
 {
     private readonly MavlinkChannel _channel;
     private readonly bool _ownsChannel;
@@ -213,36 +213,6 @@ public sealed class MavlinkClient : IDisposable, IAsyncDisposable
     private byte NextSequence()
     {
         return (byte)Interlocked.Increment(ref _sequence);
-    }
-
-    public static MavlinkClient CreateUdp(
-        string host,
-        int port,
-        IMavlinkDialect dialect,
-        byte systemId = 255,
-        byte componentId = 190,
-        IReconnectPolicy? reconnectPolicy = null,
-        Action<MavlinkChannelOptions>? configure = null)
-    {
-        var options = new MavlinkChannelOptions
-        {
-            Dialect = dialect,
-            ReconnectPolicy = reconnectPolicy
-                ?? new ExponentialBackoffPolicy(retryInitialConnect: true),
-            PortProvider = new DelegatePortProvider(ct =>
-            {
-                // A fresh UdpClient per call — the provider contract.
-                var udp = new UdpClient();
-                udp.Connect(host, port);
-                return new ValueTask<IMavlinkPort>(new MavlinkUdpPort(udp));
-            }),
-        };
-
-        configure?.Invoke(options);
-
-        var channel = MavlinkChannel.Create(options);
-        return new MavlinkClient(channel, systemId, componentId,
-            defaultSendVersion: null, ownsChannel: true);
     }
 
     private void ThrowIfDisposed()
