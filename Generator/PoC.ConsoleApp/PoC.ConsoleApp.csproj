@@ -7,4 +7,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\PoC.Generated\PoC.Generated.csproj" />
+    <ProjectReference Include="..\PoC.Mavlink\PoC.Mavlink.csproj" />
+  </ItemGroup>
+
 </Project>
