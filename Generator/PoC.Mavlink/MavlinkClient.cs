@@ -1,6 +1,4 @@
-﻿using Mavlink.Dialects;
-using Mavlink.Routing;
-using System.Net.Sockets;
+﻿using Mavlink.Routing;
 
 namespace Mavlink;
 
