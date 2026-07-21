@@ -46,4 +46,6 @@ internal static class MavlinkConstants
 	public const int MAX_PAYLOAD_V2 = 255;
 
 	public const int MAX_PAYLOAD_ARRAY_POOL_SIZE = 512;
+
+    public const int MAX_FRAME_LENGTH = HEADER_V2_LENGTH + MAX_PAYLOAD_V2 + CRC_LENGTH + SIGNATURE_LENGTH;
 }

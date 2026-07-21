@@ -18,6 +18,10 @@ public sealed class MavlinkChannelOptions
 
     public MavlinkSigner? Signer { get; set; }
 
+    public MavlinkSignatureVerifier? SignatureVerifier { get; set; }
+
+    public IMavlinkRawFrameListener? FrameListener { get; set; }
+
     public int DispatchChannelCapacity { get; set; } = 256;
 
     internal void Validate()
@@ -50,6 +54,20 @@ public sealed class MavlinkChannelOptions
             throw new ArgumentException(
                 "Channel would be inert: EnableReceive is false and the port provider " +
                 "cannot write. Enable receive or use a writable transport.");
+        }
+
+        if (!EnableReceive && SignatureVerifier != null)
+        {
+            throw new ArgumentException(
+                "SignatureVerifier requires EnableReceive = true: there is nothing to verify " +
+                "on a send-only channel. Use Signer to sign outgoing frames instead.");
+        }
+
+        if (Signer != null && !PortProvider.CanWrite)
+        {
+            throw new ArgumentException(
+                "Signer is set but the transport is read-only. Did you mean SignatureVerifier " +
+                "(incoming signature checking)?");
         }
     }
 }

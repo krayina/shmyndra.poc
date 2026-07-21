@@ -5,26 +5,37 @@ namespace Mavlink;
 internal sealed class MavlinkSender : IDisposable, IAsyncDisposable
 {
     private readonly IMavlinkConnection _connection;
-    private readonly byte _systemId;
-    private readonly byte _componentId;
+    private readonly MavlinkDiagnostics _diagnostics;
+    private readonly MavlinkSigner? _signer;
+    private readonly IMavlinkRawFrameListener? _frameListener;
     private readonly byte[] _buffer = new byte[MavlinkConstants.MAX_PAYLOAD_ARRAY_POOL_SIZE];
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly MavlinkSigner? _signer;
-    private int _sequence;
+
     private int _disposed;
 
-    public MavlinkSender(IMavlinkConnection connection, byte systemId, byte componentId, MavlinkSigner? signer)
+    public MavlinkSender(
+        IMavlinkConnection connection,
+        MavlinkDiagnostics diagnostics,
+        MavlinkSigner? signer = null,
+        IMavlinkRawFrameListener? frameListener = null)
     {
         _connection = connection ?? throw new ArgumentNullException(nameof(connection));
-        _systemId = systemId;
-        _componentId = componentId;
+        _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics));
         _signer = signer;
+        _frameListener = frameListener;
     }
 
 #if NET6_0_OR_GREATER
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
-    public async ValueTask SendAsync<T>(T message, IMavlinkMessageInfo info, MavlinkPacketVersion version, CancellationToken ct)
+    public async ValueTask<int> SendFrameAsync<T>(
+        T message,
+        IMavlinkMessageInfo info,
+        byte sequence,
+        byte systemId,
+        byte componentId,
+        MavlinkPacketVersion version,
+        CancellationToken ct)
         where T : IMavlinkMessage
     {
         ThrowIfDisposed();
@@ -34,24 +45,30 @@ internal sealed class MavlinkSender : IDisposable, IAsyncDisposable
         {
             ThrowIfDisposed();
 
-            byte seq = NextSequence();
-            int len = MavlinkSerializer.Serialize(message, info, seq, _systemId, _componentId, _buffer, version, _signer);
+            int len = MavlinkSerializer.Serialize(
+                message, info, sequence, systemId, componentId, _buffer, version, _signer);
 
             await _connection.WriteAsync(_buffer.AsMemory(0, len), ct).ConfigureAwait(false);
+            NotifyFrameSent(len);
+            return len;
         }
         finally
         {
-            if (Volatile.Read(ref _disposed) == 0)
-            {
-                _gate.Release();
-            }
+            _gate.Release();
         }
     }
 
 #if NET6_0_OR_GREATER
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
 #endif
-    public async ValueTask SendAsync(IMavlinkMessage message, IMavlinkMessageInfo info, MavlinkPacketVersion version, CancellationToken ct)
+    public async ValueTask<int> SendFrameAsync(
+        IMavlinkMessage message,
+        IMavlinkMessageInfo info,
+        byte sequence,
+        byte systemId,
+        byte componentId,
+        MavlinkPacketVersion version,
+        CancellationToken ct)
     {
         ThrowIfDisposed();
 
@@ -60,26 +77,35 @@ internal sealed class MavlinkSender : IDisposable, IAsyncDisposable
         {
             ThrowIfDisposed();
 
-            byte seq = NextSequence();
-            int len = MavlinkSerializer.Serialize(message, info, seq, _systemId, _componentId, _buffer, version, _signer);
+            int len = MavlinkSerializer.Serialize(
+                message, info, sequence, systemId, componentId, _buffer, version, _signer);
 
             await _connection.WriteAsync(_buffer.AsMemory(0, len), ct).ConfigureAwait(false);
+            NotifyFrameSent(len);
+            return len;
         }
         finally
         {
-            if (Volatile.Read(ref _disposed) == 0)
-            {
-                _gate.Release();
-            }
+            _gate.Release();
         }
     }
 
-#if NETSTANDARD2_1_OR_GREATER
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-#endif
-    private byte NextSequence()
+    private void NotifyFrameSent(int len)
     {
-        return (byte)Interlocked.Increment(ref _sequence);
+        if (_frameListener is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _frameListener.OnFrame(MavlinkFrameDirection.Sent, _buffer.AsSpan(0, len));
+        }
+        catch (Exception ex)
+        {
+            // User listener faults must not fail the send path.
+            _diagnostics.OnFrameListenerFault(ex);
+        }
     }
 
 #if NETSTANDARD2_1_OR_GREATER
@@ -100,12 +126,21 @@ internal sealed class MavlinkSender : IDisposable, IAsyncDisposable
             return;
         }
 
+        if (_gate.Wait(TimeSpan.FromSeconds(5)))
+        {
+            _gate.Release();
+        }
         _gate.Dispose();
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        Dispose();
-        return default;
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+        {
+            return;
+        }
+        await _gate.WaitAsync().ConfigureAwait(false);
+        _gate.Release();
+        _gate.Dispose();
     }
 }

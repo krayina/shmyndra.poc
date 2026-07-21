@@ -7,42 +7,40 @@ public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
 {
     private readonly MavlinkConnection _connection;
     private readonly IMavlinkDialect _dialect;
+    private readonly MavlinkSender? _sender;
     private readonly MavlinkReceiver? _receiver;
     private readonly MavlinkDispatcher? _dispatcher;
     private readonly MavlinkEventBus _eventBus;
     private readonly MavlinkDiagnostics _diagnostics;
     private readonly ConnectionWatchdog? _watchdog;
     private readonly MavlinkNodeRegistry? _registry;
-    private readonly MavlinkSigner? _signer;
     private readonly bool _canWrite;
     private readonly bool _receiveEnabled;
-    private readonly byte[] _sendBuffer = new byte[MavlinkConstants.MAX_PAYLOAD_ARRAY_POOL_SIZE];
-    private readonly SemaphoreSlim _sendGate = new(1, 1);
 
     private int _disposed;
 
     private MavlinkChannel(
         MavlinkConnection connection,
         IMavlinkDialect dialect,
+        MavlinkSender? sender,
         MavlinkReceiver? receiver,
         MavlinkDispatcher? dispatcher,
         MavlinkEventBus eventBus,
         MavlinkDiagnostics diagnostics,
         ConnectionWatchdog? watchdog,
         MavlinkNodeRegistry? registry,
-        MavlinkSigner? signer,
         bool canWrite,
         bool receiveEnabled)
     {
         _connection = connection;
         _dialect = dialect;
+        _sender = sender;
         _receiver = receiver;
         _dispatcher = dispatcher;
         _eventBus = eventBus;
         _diagnostics = diagnostics;
         _watchdog = watchdog;
         _registry = registry;
-        _signer = signer;
         _canWrite = canWrite;
         _receiveEnabled = receiveEnabled;
 
@@ -67,6 +65,7 @@ public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
             options.ReconnectPolicy,
             pumpToPipe: options.EnableReceive);
 
+        MavlinkSender? sender = null;
         MavlinkReceiver? receiver = null;
         MavlinkDispatcher? dispatcher = null;
         ConnectionWatchdog? watchdog = null;
@@ -74,6 +73,11 @@ public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
 
         var eventBus = new MavlinkEventBus(options.Dialect);
         var diagnostics = new MavlinkDiagnostics();
+
+        if (provider.CanWrite)
+        {
+            sender = new MavlinkSender(connection, diagnostics, options.Signer, options.FrameListener);
+        }
 
         if (options.EnableReceive)
         {
@@ -96,19 +100,25 @@ public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
 
             dispatcher = new MavlinkDispatcher(eventBus, options.DispatchChannelCapacity);
             var stage = new PacketProcessingStage(dispatcher, diagnostics, registry, onActivity);
-            receiver = new MavlinkReceiver(connection.Input, options.Dialect, stage, stage);
+
+            IMavlinkFrameVerifier? verifier = options.SignatureVerifier is { } sv
+                ? new MavlinkSignatureFrameVerifier(sv, diagnostics)
+                : null;
+
+            receiver = new MavlinkReceiver(
+                connection.Input, options.Dialect, diagnostics, stage, stage, options.FrameListener, verifier);
         }
 
         return new MavlinkChannel(
             connection,
             options.Dialect,
+            sender,
             receiver,
             dispatcher,
             eventBus,
             diagnostics,
             watchdog,
             registry,
-            options.Signer,
             canWrite: provider.CanWrite,
             receiveEnabled: options.EnableReceive);
     }
@@ -212,25 +222,13 @@ public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
         where T : IMavlinkMessage
     {
         ThrowIfDisposed();
-        ThrowIfNotWritable();
+        var sender = _sender ?? ThrowNotWritable();
 
-        await _sendGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            ThrowIfDisposed();
+        int len = await sender
+            .SendFrameAsync(message, info, sequence, systemId, componentId, version, ct)
+            .ConfigureAwait(false);
 
-            int len = MavlinkSerializer.Serialize(
-                message, info, sequence, systemId, componentId, _sendBuffer, version, _signer);
-
-            await _connection.WriteAsync(_sendBuffer.AsMemory(0, len), ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (Volatile.Read(ref _disposed) == 0)
-            {
-                _sendGate.Release();
-            }
-        }
+        _diagnostics.OnSent(len);
     }
 
 #if NET6_0_OR_GREATER
@@ -246,41 +244,25 @@ public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
         CancellationToken ct)
     {
         ThrowIfDisposed();
-        ThrowIfNotWritable();
+        var sender = _sender ?? ThrowNotWritable();
 
-        await _sendGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            ThrowIfDisposed();
+        int len = await sender
+            .SendFrameAsync(message, info, sequence, systemId, componentId, version, ct)
+            .ConfigureAwait(false);
 
-            int len = MavlinkSerializer.Serialize(
-                message, info, sequence, systemId, componentId, _sendBuffer, version, _signer);
-
-            await _connection.WriteAsync(_sendBuffer.AsMemory(0, len), ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            if (Volatile.Read(ref _disposed) == 0)
-            {
-                _sendGate.Release();
-            }
-        }
+        _diagnostics.OnSent(len);
     }
 
     private void OnConnectionStateChanged(MavlinkConnectionStateChangedEventArgs args)
     {
-        if (_watchdog == null)
-        {
-            return;
-        }
-
         if (args.NewState == MavlinkConnectionState.Connected)
         {
-            _watchdog.Start();
+            _diagnostics.ResetSequenceTracking();
+            _watchdog?.Start();
         }
         else
         {
-            _watchdog.Stop();
+            _watchdog?.Stop();
         }
     }
 
@@ -292,13 +274,10 @@ public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
         }
     }
 
-    private void ThrowIfNotWritable()
+    private static MavlinkSender ThrowNotWritable()
     {
-        if (!_canWrite)
-        {
-            throw new InvalidOperationException(
-                "This channel's transport is read-only (IMavlinkPortProvider.CanWrite is false).");
-        }
+        throw new InvalidOperationException(
+            "This channel's transport is read-only (IMavlinkPortProvider.CanWrite is false).");
     }
 
     private void ThrowIfReceiveDisabled()
@@ -318,12 +297,13 @@ public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
         }
 
         _connection.StateChanged -= OnConnectionStateChanged;
-        _watchdog?.Dispose();
-        _connection.Dispose();
         _receiver?.Dispose();
-        _registry?.Dispose();
+        _dispatcher?.Complete();
         _dispatcher?.Dispose();
-        _sendGate.Dispose();
+        _watchdog?.Dispose();
+        _sender?.Dispose();
+        _connection.Dispose();
+        _registry?.Dispose();
     }
 
     public async ValueTask DisposeAsync()
@@ -334,6 +314,11 @@ public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
         }
 
         _connection.StateChanged -= OnConnectionStateChanged;
+
+        if (_sender != null)
+        {
+            await _sender.DisposeAsync().ConfigureAwait(false);
+        }
 
         if (_watchdog != null)
         {
@@ -357,7 +342,5 @@ public sealed partial class MavlinkChannel : IDisposable, IAsyncDisposable
             _dispatcher.Complete();
             await _dispatcher.DisposeAsync().ConfigureAwait(false);
         }
-
-        _sendGate.Dispose();
     }
 }

@@ -8,4 +8,6 @@ public interface IMavlinkPacketListener
 public interface IMavlinkParserErrorListener
 {
     void OnParserError(MavlinkDeserializeResult result);
+
+    void OnReceiverFault(Exception exception);
 }

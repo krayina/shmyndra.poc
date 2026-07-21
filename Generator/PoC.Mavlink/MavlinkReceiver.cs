@@ -8,8 +8,11 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
 {
     private readonly System.IO.Pipelines.PipeReader _input;
     private readonly IMavlinkDialect _dialect;
+    private readonly MavlinkDiagnostics _diagnostics;
     private readonly IMavlinkPacketListener _listener;
     private readonly IMavlinkParserErrorListener _errorListener;
+    private readonly IMavlinkRawFrameListener? _frameListener;
+    private readonly IMavlinkFrameVerifier? _verifier;
     private readonly CancellationTokenSource _cts = new();
     private Task? _task;
     private int _disposed;
@@ -20,13 +23,19 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
     public MavlinkReceiver(
         System.IO.Pipelines.PipeReader input,
         IMavlinkDialect dialect,
+        MavlinkDiagnostics diagnostics,
         IMavlinkPacketListener listener,
-        IMavlinkParserErrorListener errorListener)
+        IMavlinkParserErrorListener errorListener,
+        IMavlinkRawFrameListener? frameListener = null,
+        IMavlinkFrameVerifier? verifier = null)
     {
         _input = input ?? throw new ArgumentNullException(nameof(input));
         _dialect = dialect ?? throw new ArgumentNullException(nameof(dialect));
+        _diagnostics = diagnostics ?? throw new ArgumentNullException(nameof(diagnostics));
         _listener = listener ?? throw new ArgumentNullException(nameof(listener));
         _errorListener = errorListener ?? throw new ArgumentNullException(nameof(errorListener));
+        _frameListener = frameListener;
+        _verifier = verifier;
     }
 
     public void Start()
@@ -58,7 +67,7 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
                 }
 
                 SequencePosition consumed;
-#if NETSTANDARD2_1_OR_GREATER                                
+#if NETSTANDARD2_1_OR_GREATER
                 consumed = EnqueueFramesFromSequence(buffer);
 #else
                 consumed = EnqueueFramesFallback(buffer);
@@ -70,49 +79,61 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
         {
             // Normal termination upon cancellation
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             if (Volatile.Read(ref _disposed) == 0 && !ct.IsCancellationRequested)
             {
-                _errorListener.OnParserError(MavlinkDeserializeResult.UnknownMagicByte);
+                _errorListener.OnReceiverFault(ex);
             }
         }
     }
 
-#if NETSTANDARD2_1_OR_GREATER        
+#if NETSTANDARD2_1_OR_GREATER
+    private static readonly byte[] _magics = { MavlinkConstants.MAGIC_V1, MavlinkConstants.MAGIC_V2 };
     private SequencePosition EnqueueFramesFromSequence(ReadOnlySequence<byte> sequence)
     {
         var reader = new SequenceReader<byte>(sequence);
+        // 10 + 255 + 2 + 13 = 280;
+        Span<byte> scratch = stackalloc byte[MavlinkConstants.MAX_FRAME_LENGTH];
 
         while (true)
         {
-            if (!reader.TryAdvanceTo(MavlinkConstants.MAGIC_V2, advancePastDelimiter: false) &&
-                !reader.TryAdvanceTo(MavlinkConstants.MAGIC_V1, advancePastDelimiter: false))
+            if (!reader.TryAdvanceToAny(_magics, advancePastDelimiter: false))
+            {
+                reader.Advance(reader.Remaining);
+                break;
+            }
+
+            var peek = reader;
+            if (peek.Remaining < 3) // magic + len + (for V2) incompat
             {
                 break;
             }
 
-            var peekReader = reader;
-            if (peekReader.Remaining < 2)
-            {
-                break;
-            }
-
-            peekReader.TryRead(out byte magicByte);
-            peekReader.TryRead(out byte lenByte);
+            peek.TryRead(out byte magicByte);
+            peek.TryRead(out byte lenByte);
 
             var version = magicByte == MavlinkConstants.MAGIC_V2
                 ? MavlinkPacketVersion.V2
                 : MavlinkPacketVersion.V1;
 
-            int headerLen = version == MavlinkPacketVersion.V2 ? 10 : 6;
-            int fullLength = headerLen + lenByte + 2; // +2 CRC
+            int fullLength = (version == MavlinkPacketVersion.V2 ? 10 : 6) + lenByte + 2;
 
             if (version == MavlinkPacketVersion.V2)
             {
-                if (peekReader.TryRead(out byte incompatFlags) && (incompatFlags & 0x01) != 0)
+                peek.TryRead(out byte incompatFlags);
+
+                // Spec: unknown incompatibility bits => the frame is incompatible, so we drop it.
+                if ((incompatFlags & ~(byte)MavlinkIncompatFlags.Signed) != 0)
                 {
-                    fullLength += 13; // Add 13 bytes for the signature
+                    _errorListener.OnParserError(MavlinkDeserializeResult.UnsupportedIncompatFlags);
+                    reader.Advance(1);
+                    continue;
+                }
+
+                if ((incompatFlags & (byte)MavlinkIncompatFlags.Signed) != 0)
+                {
+                    fullLength += 13;
                 }
             }
 
@@ -130,9 +151,9 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
             }
             else
             {
-                Span<byte> stackBuffer = stackalloc byte[fullLength];
-                packetSlice.CopyTo(stackBuffer);
-                parsed = ParseAndDispatchFrame(stackBuffer, version);
+                var dst = scratch.Slice(0, fullLength);
+                packetSlice.CopyTo(dst);
+                parsed = ParseAndDispatchFrame(dst, version);
             }
 
             reader.Advance(parsed ? fullLength : 1);
@@ -145,17 +166,25 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
     private bool ParseAndDispatchFrame(ReadOnlySpan<byte> frame, MavlinkPacketVersion version)
     {
         var result = MavlinkPacketParser.TryParse(frame, version, _dialect, out var packet);
-
+ 
         if (result != MavlinkDeserializeResult.Success)
         {
             _errorListener.OnParserError(result);
             return false;
         }
 
+        NotifyFrameReceived(frame);
+
+        if (_verifier != null && !_verifier.Verify(frame, in packet))
+        {
+            return true;
+        }
+ 
         _listener.OnPacketReceived(in packet);
         return true;
     }
 #else
+
     private SequencePosition EnqueueFramesFallback(ReadOnlySequence<byte> sequence)
     {
         int totalLength = (int)sequence.Length;
@@ -178,6 +207,13 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
                     continue;
                 }
 
+                NotifyFrameReceived(frame);
+
+                if (_verifier != null && !_verifier.Verify(frame, in packet))
+                {
+                    continue;
+                }
+
                 _listener.OnPacketReceived(in packet);
             }
 
@@ -191,6 +227,24 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
         return sequence.End;
     }
 #endif
+
+    private void NotifyFrameReceived(ReadOnlySpan<byte> frame)
+    {
+        if (_frameListener is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _frameListener.OnFrame(MavlinkFrameDirection.Received, frame);
+        }
+        catch (Exception ex)
+        {
+            // User listener faults must not kill the read loop.
+            _diagnostics.OnFrameListenerFault(ex);
+        }
+    }
 
     public void Dispose()
     {
@@ -210,16 +264,30 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
             // Suppress exceptions during pending read cancellation
         }
 
-        try
+        bool loopExited = true;
+        if (_task != null)
         {
-            _input.Complete();
-        }
-        catch
-        {
-            // Suppress completion exceptions
+            try
+            {
+                loopExited = _task.Wait(TimeSpan.FromSeconds(5));
+            }
+            catch (AggregateException)
+            {
+                // finishing
+            }
         }
 
-        _cts.Dispose();
+        if (loopExited)
+        {
+            try
+            {
+                _input.Complete();
+            }
+            catch
+            {
+            }
+            _cts.Dispose();
+        }
     }
 
     public async ValueTask DisposeAsync()
