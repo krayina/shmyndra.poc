@@ -84,7 +84,7 @@ public static class MavlinkV2Serializer
 
         // Payload Trimming
         int realPayloadLen = maxPayloadLen;
-        while (realPayloadLen > 0 && payloadBuffer[realPayloadLen - 1] == 0)
+        while (realPayloadLen > 1 && payloadBuffer[realPayloadLen - 1] == 0)
         {
             realPayloadLen--;
         }
