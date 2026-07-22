@@ -302,18 +302,19 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
                 tcs = _connectedTcs;
             }
 
-            if (currentState == MavlinkConnectionState.Connected && _port != null)
+            if (currentState == MavlinkConnectionState.Connected)
             {
                 var port = _port;
                 if (port == null)
                 {
+                    await Task.Yield();
                     continue;
                 }
 
                 await _writeGate.WaitAsync(ct).ConfigureAwait(false);
                 try
                 {
-                    if (_state != MavlinkConnectionState.Connected || _port == null)
+                    if (currentState != MavlinkConnectionState.Connected || _port == null)
                     {
                         throw new MavlinkConnectionException("Connection lost while waiting to write.");
                     }
@@ -347,7 +348,7 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
             }
 
 #if NET6_0_OR_GREATER
-            await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
+        await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
 #else
             var tcsTask = tcs.Task;
             if (!tcsTask.IsCompleted)
