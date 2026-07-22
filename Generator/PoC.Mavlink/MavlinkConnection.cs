@@ -76,9 +76,19 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
                     break;
 
                 case MavlinkConnectionState.Disconnected:
+                    // User-initiated stop: cancel waiters (no fault).
+                    // Canceled tasks never raise UnobservedTaskException, so no orphan-observer needed.
+                    // Removes the assumption that ConnectionLost is triggered on a normal Disconnect
+                    _connectedTcs.TrySetCanceled();
+                    _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    break;
                 case MavlinkConnectionState.ConnectionLost:
-                    _connectedTcs.TrySetException(new MavlinkConnectionException($"Connection lost: {value}", error));
-                    _connectedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    var lost = _connectedTcs;
+
+                    lost.TrySetException(new MavlinkConnectionException($"Connection lost: {value}", error));
+                    _ = lost.Task.ContinueWith(static t => { _ = t.Exception; },
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+                    _connectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
                     break;
 
                 case MavlinkConnectionState.Reconnecting:
@@ -370,38 +380,24 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
 #if NETSTANDARD2_1_OR_GREATER
         if (port.Reader is { } src)
         {
-            try
+            while (!ct.IsCancellationRequested)
             {
-                while (!ct.IsCancellationRequested)
+                var res = await src.ReadAsync(ct).ConfigureAwait(false);
+                var buf = res.Buffer;
+
+                foreach (var seg in buf)
                 {
-                    var res = await src.ReadAsync(ct).ConfigureAwait(false);
-                    var buf = res.Buffer;
-
-                    foreach (var seg in buf)
-                    {
-                        var mem = writer.GetMemory(seg.Length);
-                        seg.Span.CopyTo(mem.Span);
-                        writer.Advance(seg.Length);
-                    }
-
-                    src.AdvanceTo(buf.End);
-                    var flush = await writer.FlushAsync(ct).ConfigureAwait(false);
-
-                    if (flush.IsCompleted || res.IsCompleted)
-                    {
-                        break;
-                    }
+                    var mem = writer.GetMemory(seg.Length);
+                    seg.Span.CopyTo(mem.Span);
+                    writer.Advance(seg.Length);
                 }
-            }
-            finally
-            {
-                try
+
+                src.AdvanceTo(buf.End);
+                var flush = await writer.FlushAsync(ct).ConfigureAwait(false);
+
+                if (flush.IsCompleted || res.IsCompleted)
                 {
-                    await writer.CompleteAsync().ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Suppress exceptions during writer completion
+                    break;
                 }
             }
             return;
@@ -435,15 +431,6 @@ internal sealed class MavlinkConnection : IMavlinkConnection, IDisposable, IAsyn
         finally
         {
             pool.Return(bufArray);
-
-            try
-            {
-                await writer.CompleteAsync().ConfigureAwait(false);
-            }
-            catch
-            {
-                // Suppress exceptions during writer completion
-            }
         }
     }
 
