@@ -200,43 +200,36 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
 
     private SequencePosition EnqueueFramesFallback(ReadOnlySequence<byte> sequence)
     {
-        int totalLength = (int)sequence.Length;
-        var pool = ArrayPool<byte>.Shared;
-        byte[] array = pool.Rent(totalLength);
-
-        try
+        foreach (var segment in sequence)
         {
-            sequence.CopyTo(array);
-            _framer.Append(array, 0, totalLength);
+            _framer.Append(segment.Span);
+        }
 
-            while (_framer.TryReadFrame(out int offset, out int length, out var version))
+        while (_framer.TryPeekFrame(out int offset, out int length, out var version))
+        {
+            var frame = _framer.RawBuffer.AsSpan(offset, length);
+            var result = MavlinkPacketParser.TryParse(frame, version, _dialect, out var packet);
+
+            if (result != MavlinkDeserializeResult.Success)
             {
-                var frame = _framer.RawBuffer.AsSpan(offset, length);
-                var result = MavlinkPacketParser.TryParse(frame, version, _dialect, out var packet);
-
-                if (result != MavlinkDeserializeResult.Success)
-                {
-                    _errorListener.OnParserError(result);
-                    continue;
-                }
-
-                NotifyFrameReceived(frame);
-
-                if (_verifier != null && !_verifier.Verify(frame, in packet))
-                {
-                    continue;
-                }
-
-                _listener.OnPacketReceived(in packet);
+                _errorListener.OnParserError(result);
+                _framer.SkipByte();
+                continue;
             }
 
-            _framer.CompactIfNeeded();
-        }
-        finally
-        {
-            pool.Return(array);
+            _framer.Consume(length);
+
+            NotifyFrameReceived(frame);
+
+            if (_verifier != null && !_verifier.Verify(frame, in packet))
+            {
+                continue;
+            }
+
+            _listener.OnPacketReceived(in packet);
         }
 
+        _framer.CompactIfNeeded();
         return sequence.End;
     }
 #endif
