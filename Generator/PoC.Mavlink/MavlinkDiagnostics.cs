@@ -117,22 +117,28 @@ public sealed class MavlinkDiagnostics
     {
         ushort key = (ushort)((sysId << 8) | compId);
 
-        _lastSequence.AddOrUpdate(key, seq, (_, lastSeq) =>
+        while (true)
         {
-            byte expected = unchecked((byte)(lastSeq + 1));
-            if (seq != expected)
+            if (!_lastSequence.TryGetValue(key, out byte lastSeq))
             {
-                int gap = (seq - expected + 256) % 256;
-
-                // Large gaps are ambiguous: on UDP they usually mean a reordered or
-                // duplicated datagram, not mass loss. Count only plausible gaps.
-                if (gap < MaxPlausibleSequenceGap)
-                {
-                    Interlocked.Add(ref _sequenceErrors, gap);
-                }
+                if (_lastSequence.TryAdd(key, seq)) return;
+                continue;
             }
-            return seq;
-        });
+
+            byte expected = unchecked((byte)(lastSeq + 1));
+            int gap = (seq - expected + 256) % 256;
+
+            if (gap >= MaxPlausibleSequenceGap)
+            {
+                return;
+            }
+
+            if (_lastSequence.TryUpdate(key, seq, lastSeq))
+            {
+                if (gap > 0) Interlocked.Add(ref _sequenceErrors, gap);
+                return;
+            }
+        }
     }
 
     /// <summary>
