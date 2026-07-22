@@ -145,4 +145,10 @@ internal sealed class MavlinkFrameReader
         Buffer.BlockCopy(_buffer, 0, newBuffer, 0, _tail);
         _buffer = newBuffer;
     }
+
+    public void Reset()
+    {
+        _head = 0;
+        _tail = 0;
+    }
 }

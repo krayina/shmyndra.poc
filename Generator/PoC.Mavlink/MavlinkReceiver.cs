@@ -18,6 +18,7 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
     private int _disposed;
 #if !NETSTANDARD2_1_OR_GREATER
     private readonly MavlinkFrameReader _framer = new();
+    private volatile bool _resetRequested;
 #endif
 
     public MavlinkReceiver(
@@ -48,6 +49,13 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
         _task = Task.Run(() => ReadLoopAsync(_cts.Token));
     }
 
+#if !NETSTANDARD2_1_OR_GREATER
+    internal void RequestFramingReset()
+    {
+        _resetRequested = true;
+    }
+#endif
+
     private async Task ReadLoopAsync(CancellationToken ct)
     {
         try
@@ -70,6 +78,11 @@ internal sealed class MavlinkReceiver : IDisposable, IAsyncDisposable
 #if NETSTANDARD2_1_OR_GREATER
                 consumed = EnqueueFramesFromSequence(buffer);
 #else
+                if (_resetRequested)
+                {
+                    _resetRequested = false;
+                    _framer.Reset();
+                }
                 consumed = EnqueueFramesFallback(buffer);
 #endif
                 _input.AdvanceTo(consumed, buffer.End);
